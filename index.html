@@ -4,6 +4,75 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+<!-- HRクラウド社内ログイン（CS・FS共通。2026-11-10）
+     会社のGoogleアカウント（@hr-cloud.co.jp）でログインしてもらい、GAS（script.google.com）への読み込みにだけ
+     ログインの証明（IDトークン）を自動で付ける。GAS側（HRC認証.gs）で本物か確かめて、社内の人にだけデータを返す。
+     ログインの証明はこのタブの間だけ保存（sessionStorage）。2回目以降は自動でログインされる。 -->
+<script src="https://accounts.google.com/gsi/client" async></script>
+<script>
+(function(){
+  var CLIENT_ID = '134152112182-j4ou4dop3mblgh3h11avv5f5d0qhptj9.apps.googleusercontent.com';   /* 秘密の値ではない */
+  var DOMAIN = 'hr-cloud.co.jp', KEY = 'hrc_idt';
+  function payload(t){ try{ var p=t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'); return JSON.parse(decodeURIComponent(escape(atob(p)))); }catch(e){ return null; } }
+  function okMail(p){ return p && String(p.email||'').toLowerCase().slice(-(DOMAIN.length+1)) === '@'+DOMAIN; }
+  function valid(t){ var p = t && payload(t); return !!(p && okMail(p) && p.exp*1000 > Date.now() + 120000); }
+  var tok = null; try{ tok = sessionStorage.getItem(KEY); }catch(e){}
+  if(!valid(tok)) tok = null;
+  var waiting = false, ov = null, inited = false;
+
+  function show(msg){
+    if(!ov){
+      ov = document.createElement('div');
+      ov.id = 'hrcLogin';
+      ov.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:rgba(246,248,251,.97);display:flex;align-items:center;justify-content:center;font-family:Inter,"Hiragino Sans","Yu Gothic",sans-serif';
+      ov.innerHTML = '<div style="background:#fff;border:1px solid #dde3ea;border-radius:16px;padding:28px 32px;text-align:center;max-width:380px;box-shadow:0 8px 30px rgba(0,0,0,.08)">'
+        + '<div style="font-weight:700;font-size:16px;margin-bottom:8px;color:#14446e">HRクラウド 社内ダッシュボード</div>'
+        + '<div id="hrcMsg" style="font-size:13px;color:#555;margin-bottom:16px;line-height:1.6">会社のGoogleアカウント（@'+DOMAIN+'）でログインしてください</div>'
+        + '<div id="hrcBtn" style="display:flex;justify-content:center;min-height:44px"></div></div>';
+      (document.body || document.documentElement).appendChild(ov);
+    }
+    if(msg) ov.querySelector('#hrcMsg').textContent = msg;
+    ov.style.display = 'flex';
+    init();
+  }
+  function init(){
+    if(!(window.google && google.accounts && google.accounts.id)) return setTimeout(init, 150);
+    if(!inited){
+      inited = true;
+      google.accounts.id.initialize({
+        client_id: CLIENT_ID, auto_select: true, cancel_on_tap_outside: false,
+        callback: function(r){
+          var p = payload(r.credential);
+          if(!okMail(p)){ show('会社のアカウント（@'+DOMAIN+'）でログインしてください（今は ' + ((p&&p.email)||'不明') + '）'); return; }
+          try{ sessionStorage.setItem(KEY, r.credential); }catch(e){}
+          location.reload();   /* ログインできたら読み込み直す（待っていた読み込みをやり直す） */
+        }
+      });
+    }
+    if(ov && ov.style.display !== 'none'){
+      google.accounts.id.renderButton(ov.querySelector('#hrcBtn'), { theme:'outline', size:'large', text:'signin_with', shape:'pill', locale:'ja' });
+      google.accounts.id.prompt();
+    }
+  }
+  function isGas(u){ return /^https:\/\/script\.google(usercontent)?\.com\//.test(u); }
+  var origFetch = window.fetch.bind(window);
+  window.fetch = function(input, opt){
+    var url = typeof input === 'string' ? input : (input && input.url) || '';
+    if(!isGas(url)) return origFetch(input, opt);
+    if(!valid(tok)){ if(!waiting){ waiting = true; show(); } return new Promise(function(){}); }   /* ログインまで待つ（ログイン後に読み込み直す） */
+    opt = Object.assign({}, opt || {});
+    var m = String(opt.method || 'GET').toUpperCase();
+    if(m === 'GET'){
+      url += (url.indexOf('?') >= 0 ? '&' : '?') + 'id_token=' + encodeURIComponent(tok);
+      return origFetch(url, opt);
+    }
+    if(typeof opt.body === 'string'){ try{ var b = JSON.parse(opt.body); b.id_token = tok; opt.body = JSON.stringify(b); }catch(e){} }
+    return origFetch(typeof input === 'string' ? url : input, opt);
+  };
+  window.HRC_LOGOUT = function(){ try{ sessionStorage.removeItem(KEY); }catch(e){} if(window.google && google.accounts) google.accounts.id.disableAutoSelect(); location.reload(); };
+})();
+</script>
+
 <meta charset="UTF-8">
 <title>FS案件管理ダッシュボード</title>
 <!-- ★ 2026-08-12(B3): Tailwind を CDN から「ビルド済みCSSの埋め込み」へ変更。
