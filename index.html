@@ -3315,8 +3315,8 @@ const GAS_URL = 'https://script.google.com/macros/s/AKfycbzi6SLnPh6qKmjXpfQcIpaS
 // ★ IS GAS: デプロイ後にURLをここへ貼り付け
 const IS_GAS_URL = 'https://script.google.com/macros/s/AKfycbyKC1EL1fLBjanVW-1Ctpp4bHdBRHgUsJtEXdX-UjvC-kWA8wIBf5GnRZGOPP3_bxjS/exec';
 // ★ セキュリティ: GASアクセストークン（GAS側 Script Properties の ACCESS_TOKEN と必ず一致させること）
-const GAS_TOKEN    = 'fs_tok_Z3mh6uzmqNzS7Ur3pilNkR'; // FS GAS用
-const IS_GAS_TOKEN = 'is_tok_e5eWpSaNHwQ9Xp7UDS3VD';  // IS GAS用
+const GAS_TOKEN    = ''; // 2026-11-10 合言葉は廃止（公開されていたため）。データは社内ログイン（HRC認証）で守る
+const IS_GAS_TOKEN = '';  // 2026-11-10 合言葉は廃止
 
 // GAS への書き込み（no-cors POST → fire and forget）
 async function gasPost(action, data) {
