@@ -62,12 +62,22 @@
     if(!valid(tok)){ if(!waiting){ waiting = true; show(); } return new Promise(function(){}); }   /* ログインまで待つ（ログイン後に読み込み直す） */
     opt = Object.assign({}, opt || {});
     var m = String(opt.method || 'GET').toUpperCase();
+    var req;
     if(m === 'GET'){
       url += (url.indexOf('?') >= 0 ? '&' : '?') + 'id_token=' + encodeURIComponent(tok);
-      return origFetch(url, opt);
+      req = origFetch(url, opt);
+    } else {
+      if(typeof opt.body === 'string'){ try{ var b = JSON.parse(opt.body); b.id_token = tok; opt.body = JSON.stringify(b); }catch(e){} }
+      req = origFetch(typeof input === 'string' ? url : input, opt);
     }
-    if(typeof opt.body === 'string'){ try{ var b = JSON.parse(opt.body); b.id_token = tok; opt.body = JSON.stringify(b); }catch(e){} }
-    return origFetch(typeof input === 'string' ? url : input, opt);
+    /* GASが断ったとき（閲覧の許可がない・ログインの期限切れ）は、わかる言葉で表示する（2026-11-10） */
+    return req.then(function(r){
+      try{ if(r.type !== 'opaque') r.clone().text().then(function(t){
+        if(/"error"\s*:\s*"forbidden_user"/.test(t)){ var p = payload(tok); show('このアカウント（' + ((p&&p.email)||'') + '）には、このダッシュボードを見る許可がありません。深津へ連絡をお願いします'); }
+        else if(/"error"\s*:\s*"(login_expired|login_required)"/.test(t)){ try{ sessionStorage.removeItem(KEY); }catch(e){} tok = null; show('ログインの有効期限が切れました。もう一度ログインしてください'); }
+      }).catch(function(){}); }catch(e){}
+      return r;
+    });
   };
   window.HRC_LOGOUT = function(){ try{ sessionStorage.removeItem(KEY); }catch(e){} if(window.google && google.accounts) google.accounts.id.disableAutoSelect(); location.reload(); };
 })();
