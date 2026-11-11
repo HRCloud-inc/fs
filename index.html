@@ -2094,7 +2094,8 @@ function uixRenderIsSummary(months, activePipe, cur) {
   const prevVals = {
     apo: _getMemberDealsForKind('__ALL__', 'apo', prev).length,
     jisshi: _getMemberDealsForKind('__ALL__', 'jisshi', prev).length,
-    yomi: allDeals.filter(d => {
+    // ★ 2026-11-11 修正: 今期の数え方（カード）にそろえて、来期着地の案件も含める
+    yomi: [...allDeals, ...((typeof snapshotView !== 'undefined' && snapshotView) ? [] : (futureDeals || []))].filter(d => {
       if (!inPrev(d.yomiDecidedDate)) return false;
       if (d.stage === 'E' || d.stage === 'D') return false;
       if (d.stage === '失注' && d.lostLabel === '未ヨミ化') return false;
@@ -2427,6 +2428,17 @@ const TAB_STATE = {
 // localStorageから復元
 try {
   const saved = JSON.parse(localStorage.getItem(TAB_STATE_KEY) || '{}');
+  // ★ 2026-11-11 修正: これまでの不具合で、FSの保存値は開くたびに「月別・FY2026・2026/05」で上書きされていた。
+  //   その壊れた値を1回だけ捨てる（捨てたあとは「今月」で開く）。以後は前回見ていた期間で開く。
+  try {
+    if (!localStorage.getItem('fs-dashboard-tab-state-fix-20261111')) {
+      if (saved.fs && saved.fs.mode === 'month' && saved.fs.fy === 'FY2026' && saved.fs.period === '2026/05') {
+        delete saved.fs;
+        localStorage.setItem(TAB_STATE_KEY, JSON.stringify(saved));   // 捨てた状態を保存し直す
+      }
+      localStorage.setItem('fs-dashboard-tab-state-fix-20261111', '1');
+    }
+  } catch (e) {}
   if (saved.fs) Object.assign(TAB_STATE.fs, saved.fs);
   if (saved.is) Object.assign(TAB_STATE.is, saved.is);
 } catch (e) {}
@@ -2456,10 +2468,13 @@ function _afterPaint(fn) {
   }
 }
 
+let _dashTabReady = false;   // ★ 2026-11-11: 起動時の1回目の呼び出しが済んだか
 function switchDashboard(tab) {
   if (tab !== 'fs' && tab !== 'is') tab = 'fs';
   // 切替前に現タブの状態を保存
-  if (typeof currentMode !== 'undefined') _saveCurrentToActiveTab();
+  // ★ 2026-11-11 修正: 起動時の1回目は保存しない。まだ復元前で、初期値（2026/05）で保存済みの期間を上書きしてしまっていた
+  if (_dashTabReady && typeof currentMode !== 'undefined') _saveCurrentToActiveTab();
+  _dashTabReady = true;
   activeTab = tab;
   _restoreFromTab(tab);
 
@@ -2526,7 +2541,9 @@ function getWinRate(stage, product) {
   if (stage === 'S') return 1.0;
   const prod = (product && PRODUCTS_LIST.includes(product)) ? product : 'default';
   const custom = customWinRates[stage];
-  if (custom && custom[prod] !== undefined) return custom[prod];
+  // ★ 2026-11-11 修正: 個別設定は「数値のときだけ」使う。空欄のまま保存された値（null）は未設定として既定値を使う
+  //   （これまでは null がそのまま使われ、そのステージの着地予想が 0 円になっていた）
+  if (custom && typeof custom[prod] === 'number' && isFinite(custom[prod])) return custom[prod];
   const def = WIN_RATES_DEFAULT[stage] || {};
   return def[prod] !== undefined ? def[prod] : (def['default'] || 0);
 }
@@ -2890,7 +2907,7 @@ function openSimilarModal(companyEnc, industryEnc, productEnc) {
   const body  = document.getElementById('similarModalBody');
   if (!body) return;
   title.textContent = `🔍 ${company || '?'} の類似企業（${list.length}件）`;
-  const filterTxt = product ? ` / 検討領域: <b class="text-slate-700">${product}</b>のみ` : '';
+  const filterTxt = product ? ` / 検討領域: <b class="text-slate-700">${_escapeHtml(product)}</b>のみ` : '';
   sub.innerHTML = `業界: <b class="text-slate-700">${_escapeHtml(industry || '不明')}</b>${filterTxt} / 受注済み企業マスタから抽出`;
   if (list.length === 0) {
     body.innerHTML = '<p class="text-center text-slate-400 py-8">該当する類似企業はありません</p>';
@@ -2903,7 +2920,7 @@ function openSimilarModal(companyEnc, industryEnc, productEnc) {
       const isNo  = t === 'FALSE' || t === '不可' || t === 'No' || t === 'NG' || t === '×';
       if (isYes) return '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold" style="background:#d1fae5;color:#065f46">可</span>';
       if (isNo)  return '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold" style="background:#fee2e2;color:#991b1b">不可</span>';
-      return `<span class="text-[11px] text-slate-600">${t}</span>`;
+      return `<span class="text-[11px] text-slate-600">${_escapeHtml(t)}</span>`;
     };
     // 数値変換（"0", 0, null, "", "#N/A" 等の安全な処理）
     const toNum = (v) => {
@@ -2961,9 +2978,9 @@ function openSimilarModal(companyEnc, industryEnc, productEnc) {
       const url  = String(c.interviewUrl || '').trim();
       if (url && /^https?:\/\//i.test(url)) {
         const label = text && text !== '#N/A' ? text : '記事を見る';
-        return `<a href="${url}" target="_blank" rel="noopener noreferrer"
+        return `<a href="${_escapeHtml(url)}" target="_blank" rel="noopener noreferrer"
                   style="color:#2575f0;text-decoration:underline;font-weight:500;cursor:pointer;display:inline-block;max-width:320px;white-space:normal;text-align:left;line-height:1.35;"
-                  title="インタビュー記事を開く">${label}</a>`;
+                  title="インタビュー記事を開く">${_escapeHtml(label)}</a>`;
       }
       // URL 無しは従来通り
       return yesNoBadge(text);
@@ -2974,11 +2991,11 @@ function openSimilarModal(companyEnc, industryEnc, productEnc) {
       if (!name) return '<span class="text-slate-300">-</span>';
       const q = encodeURIComponent(name + ' 採用');
       const url = `https://www.google.com/search?q=${q}`;
-      return `<a href="${url}" target="_blank" rel="noopener noreferrer"
+      return `<a href="${_escapeHtml(url)}" target="_blank" rel="noopener noreferrer"
                 style="color:#2575f0;text-decoration:none;font-weight:500;cursor:pointer;"
                 onmouseover="this.style.textDecoration='underline'"
                 onmouseout="this.style.textDecoration='none'"
-                title="Googleで「${name} 採用」を検索">${name}</a>`;
+                title="Googleで「${_escapeHtml(name)} 採用」を検索">${_escapeHtml(name)}</a>`;
     };
     // 求人ページ → career-cloud.asia の Google site検索リンク（企業名で検索）
     const jobPageLink = (c) => {
@@ -2986,16 +3003,16 @@ function openSimilarModal(companyEnc, industryEnc, productEnc) {
       if (!name) return '<span class="text-slate-300">-</span>';
       const q = encodeURIComponent('site:www.career-cloud.asia/mid/entry/job/offer ' + name);
       const url = `https://www.google.com/search?q=${q}`;
-      return `<a href="${url}" target="_blank" rel="noopener noreferrer"
+      return `<a href="${_escapeHtml(url)}" target="_blank" rel="noopener noreferrer"
                 style="color:#2575f0;text-decoration:none;font-weight:500;cursor:pointer;font-size:11px;white-space:nowrap;"
                 onmouseover="this.style.textDecoration='underline'"
                 onmouseout="this.style.textDecoration='none'"
-                title="career-cloud で「${name}」の求人ページを検索"><i class="ti ti-external-link"></i> 求人を見る</a>`;
+                title="career-cloud で「${_escapeHtml(name)}」の求人ページを検索"><i class="ti ti-external-link"></i> 求人を見る</a>`;
     };
     const rows = sorted.map(c => `<tr class="border-b" style="border-color:#eef1f6">
       <td class="px-2 py-1 text-[12px] font-medium" style="overflow:hidden;text-overflow:ellipsis;">${companyLink(c)}</td>
       <td class="px-2 py-1 text-center whitespace-nowrap">${ryouikiLabel(c)}</td>
-      <td class="px-2 py-1 text-[11px] text-slate-600 whitespace-nowrap">${c.location || '-'}</td>
+      <td class="px-2 py-1 text-[11px] text-slate-600 whitespace-nowrap">${_escapeHtml(c.location || '-')}</td>
       <td class="px-2 py-1 text-[11px] text-slate-600" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_escapeHtml(c.industry || '-')}</td>
       <td class="px-2 py-1 text-[11px] text-right text-slate-600 whitespace-nowrap">${c.employees != null ? c.employees.toLocaleString() + '人' : '-'}</td>
       <td class="px-2 py-1 text-center whitespace-nowrap">${yesNoBadge(c.canPublish)}</td>
@@ -3508,25 +3525,38 @@ async function fetchFromSheets(silent = false, useFresh = !silent) {
     }
 
     // 受注率
-    if (json.winRates) {
+    // ★ 2026-11-11 修正（保存した値が古い値に戻る件）: この画面で勝率を保存してから35分間は、手元の値を使い続ける。
+    //   本体の返事は最大30分前の内容（キャッシュ）なので、そのまま使うと保存前の勝率に戻ってしまっていた。
+    const _wrLocal = _winRatesLocalGet();
+    if (_wrLocal) {
+      customWinRates = _wrLocal.customWinRates || {};
+      eWinRate = (typeof _wrLocal.eWinRate === 'number' && isFinite(_wrLocal.eWinRate)) ? _wrLocal.eWinRate : 0.10;
+    } else if (json.winRates) {
       customWinRates = json.winRates.customWinRates || {};
-      eWinRate = json.winRates.eWinRate !== undefined ? json.winRates.eWinRate : 0.10;
+      // ★ 2026-11-11 修正: 数値のときだけ使う（空欄のまま保存された null は既定の10%に戻す）
+      eWinRate = (typeof json.winRates.eWinRate === 'number' && isFinite(json.winRates.eWinRate)) ? json.winRates.eWinRate : 0.10;
     }
 
     // ★ 共有データ：Min/Mid/Max 分類 & メモ（チーム全員で共有）
     // GAS の最新値で localStorage を上書き（チーム同期）
-    if (json.landingClassMap && typeof json.landingClassMap === 'object') {
-      _landingClassMap = json.landingClassMap;
-      try { localStorage.setItem(LANDING_CLASS_KEY, JSON.stringify(_landingClassMap)); } catch(e) {}
-      console.log('[landingClassMap] 取得件数:', Object.keys(_landingClassMap).length);
-    }
-    if (json.landingMemoMap && typeof json.landingMemoMap === 'object') {
-      _landingMemoMap = json.landingMemoMap;
-      try { localStorage.setItem(LANDING_MEMO_KEY, JSON.stringify(_landingMemoMap)); } catch(e) {}
-      console.log('[landingMemoMap] 取得件数:', Object.keys(_landingMemoMap).length);
+    // ★ 2026-11-11 修正（保存した値が古い値に戻る件）: 本体の返事は最大30分前の内容（キャッシュ）。
+    //   最新の共有データ（30秒ごとの取得・キャッシュなし）を一度でも受け取ったあとは、本体の値では上書きしない。
+    //   これまでは5分ごとの自動更新のたびに古い分類・メモへ戻り、30秒ごとの取得でも元に戻らなかった。
+    if (!_landingFreshAt) {
+      if (json.landingClassMap && typeof json.landingClassMap === 'object') {
+        _landingClassMap = _landingApplyPending('cls', json.landingClassMap);
+        try { localStorage.setItem(LANDING_CLASS_KEY, JSON.stringify(_landingClassMap)); } catch(e) {}
+        console.log('[landingClassMap] 取得件数:', Object.keys(_landingClassMap).length);
+      }
+      if (json.landingMemoMap && typeof json.landingMemoMap === 'object') {
+        _landingMemoMap = _landingApplyPending('memo', json.landingMemoMap);
+        try { localStorage.setItem(LANDING_MEMO_KEY, JSON.stringify(_landingMemoMap)); } catch(e) {}
+        console.log('[landingMemoMap] 取得件数:', Object.keys(_landingMemoMap).length);
+      }
     }
     // ★ 自動ポーリング開始（初回のみ）
     _startLandingPolling();
+    _pollLandingShared();   // ★ 2026-11-11: すぐに最新（キャッシュなし）の分類・メモを取りに行く
 
     // 類似企業マスタ
     if (Array.isArray(json.similarCompanies)) {
@@ -5138,7 +5168,7 @@ function renderPerceptionActivity() {
 
         // ===== 段階2: 担当者名 ＋ 保有数（R/N） =====
         let block = `
-          <div onclick="toggleIsAccOwner('${_escAttrPerc(owner)}')"
+          <div onclick="toggleIsAccOwner('${_escJsAttr(owner)}')"
             class="grid items-center gap-2 py-2 px-2 mt-1 rounded-lg cursor-pointer ${isOpen ? '' : 'hover:bg-slate-50'}"
             style="grid-template-columns: 18px 1fr auto;${isOpen ? 'background:#dcfce7;' : 'background:#f6f8fb;'}">
             <span class="text-xs ${isOpen ? 'text-emerald-700 font-bold' : 'text-slate-400'}">${ownerIcon}</span>
@@ -5167,7 +5197,7 @@ function renderPerceptionActivity() {
               const pct = (s.cnt / upTotal) * 100;
               const label = pct >= 12 ? `${Math.round(pct)}%` : '';
               // 到達段階をクリックで「その段階に上がった企業」一覧ドリルダウン
-              return `<div onclick="event.stopPropagation();openPercTransModal('${_escAttrPerc(owner)}','','${_escAttrPerc(s.stage)}')"
+              return `<div onclick="event.stopPropagation();openPercTransModal('${_escJsAttr(owner)}','','${_escJsAttr(s.stage)}')"
                 title="→${s.stage} ${s.cnt}件 (${Math.round(pct)}%) ・クリックで企業一覧"
                 style="width:${pct}%;background:${color};display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:600;cursor:pointer;">${label}</div>`;
             }).join('');
@@ -5867,15 +5897,15 @@ function _renderL1CardChart(rows, accent, mode, prevSummary, kind) {
     const deltaHtml = (prevVal != null) ? _renderDelta(s.value, prevVal) : '';
     // 凡例クリック時の引数：mode と区分キーをエスケープして埋め込み
     const keyArg = (mode === 'perception')
-      ? `'${String(s.key).replace(/'/g, "\\'")}'`
+      ? `'${_escJsAttr(s.key)}'`
       : String(s.key); // todo はカテゴリ番号(1-4)
     return `<div onclick="event.stopPropagation();_drillFromL1Legend('${kind}','${mode}',${keyArg})"
-         title="クリックで「${s.label}」の全担当者リストを表示"
+         title="クリックで「${_escapeHtml(s.label)}」の全担当者リストを表示"
          style="display:flex;align-items:center;gap:5px;font-size:10px;color:#5a6577;cursor:pointer;padding:1px 4px;border-radius:4px;"
          onmouseover="this.style.background='#eef1f6'"
          onmouseout="this.style.background='transparent'">
       <span style="width:8px;height:8px;border-radius:2px;background:${s.color};flex-shrink:0;"></span>
-      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${s.label}</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_escapeHtml(s.label)}</span>
       <span style="font-weight:700;color:${s.textColor || s.color};">${s.value}</span>
       <span style="color:#a8b2c1;">(${pct}%)</span>
       ${deltaHtml}
@@ -6022,7 +6052,7 @@ function _renderIsListLevel2(kind) {
 
     ownerRows = sortedOwners.map(([owner, s]) => {
       const isIsMember = isMemberSet.has(owner);
-      const esc = owner.replace(/'/g, "\\'");
+      const esc = _escJsAttr(owner);   // ★ 2026-11-11: 「'」以外（" や \\）でも壊れないように
       const segs = PERCEPTION_FLOW_DISPLAY.map(p => {
         const n = s.counts[p.key] || 0;
         if (n <= 0) return '';
@@ -6037,7 +6067,7 @@ function _renderIsListLevel2(kind) {
       return `<tr class="border-b cursor-pointer hover:bg-slate-50 transition-colors" style="border-color:#eef1f6"
                 onclick="isListDrillToOwner('${esc}')">
         <td class="px-3 py-2 text-[12px] ${isIsMember ? 'font-semibold text-slate-700' : 'text-slate-500'}">
-          ${owner}${isIsMember ? '' : ' <span class="text-[10px] text-slate-400">(IS外)</span>'}
+          ${_escapeHtml(owner)}${isIsMember ? '' : ' <span class="text-[10px] text-slate-400">(IS外)</span>'}
         </td>
         <td class="px-3 py-2 text-right text-[13px] font-bold" style="color:${accent}">${s.total}<span class="text-[10px] font-normal text-slate-400 ml-0.5">社</span></td>
         <td class="px-3 py-2" style="width:44%">${stacked}</td>
@@ -6060,7 +6090,7 @@ function _renderIsListLevel2(kind) {
 
     ownerRows = sortedOwners.map(([owner, s]) => {
       const isIsMember = isMemberSet.has(owner);
-      const esc = owner.replace(/'/g, "\\'");
+      const esc = _escJsAttr(owner);   // ★ 2026-11-11: 「'」以外（" や \\）でも壊れないように
       const p1 = s.total > 0 ? s.cat1 / s.total * 100 : 0;
       const p2 = s.total > 0 ? s.cat2 / s.total * 100 : 0;
       const p3 = s.total > 0 ? s.cat3 / s.total * 100 : 0;
@@ -6083,7 +6113,7 @@ function _renderIsListLevel2(kind) {
       return `<tr class="border-b cursor-pointer hover:bg-slate-50 transition-colors" style="border-color:#eef1f6"
                 onclick="isListDrillToOwner('${esc}')">
         <td class="px-3 py-2 text-[12px] ${isIsMember ? 'font-semibold text-slate-700' : 'text-slate-500'}">
-          ${owner}${isIsMember ? '' : ' <span class="text-[10px] text-slate-400">(IS外)</span>'}
+          ${_escapeHtml(owner)}${isIsMember ? '' : ' <span class="text-[10px] text-slate-400">(IS外)</span>'}
         </td>
         <td class="px-3 py-2 text-right text-[13px] font-bold" style="color:${accent}">${s.total}<span class="text-[10px] font-normal text-slate-400 ml-0.5">社</span></td>
         <td class="px-3 py-2" style="width:44%">${stacked}</td>
@@ -6236,8 +6266,8 @@ function _renderIsListLevel3(kind, owner, opts) {
       ? `https://app.hubspot.com/contacts/${HUBSPOT_PORTAL_ID}/contact/${cId}`
       : '';
     const lastNameCell = hubContactUrl
-      ? `<a href="${hubContactUrl}" target="_blank" rel="noopener" style="color:#1e40af;text-decoration:none;cursor:pointer;font-weight:600;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'" title="HubSpotでコンタクトを開く">${lastNmDisp || '-'}</a>`
-      : `<span style="color:#1e40af;font-weight:600;">${lastNmDisp || '-'}</span>`;
+      ? `<a href="${hubContactUrl}" target="_blank" rel="noopener" style="color:#1e40af;text-decoration:none;cursor:pointer;font-weight:600;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'" title="HubSpotでコンタクトを開く">${_escapeHtml(lastNmDisp || '-')}</a>`
+      : `<span style="color:#1e40af;font-weight:600;">${_escapeHtml(lastNmDisp || '-')}</span>`;
     const lc = _validDateStr(c.lastContact);
     const lm = _validDateStr(c.lastMet);
     const nc = _validDateStr(c.nextCall);
@@ -6249,11 +6279,11 @@ function _renderIsListLevel3(kind, owner, opts) {
       ncCell = `<span style="color:${color};font-weight:600;">${nc}</span>`;
     }
     const perceptionCell = perception
-      ? `<span style="background:${accentBg};color:${accent};font-size:10px;padding:1px 6px;border-radius:4px;font-weight:600;">${perception}</span>`
+      ? `<span style="background:${accentBg};color:${accent};font-size:10px;padding:1px 6px;border-radius:4px;font-weight:600;">${_escapeHtml(perception)}</span>`
       : '-';
     let _sub = `<tr style="background:${bg};border-bottom:1px solid #e2e7ef;">
       <td style="padding:4px 8px 4px 28px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${lastNameCell}</td>
-      <td style="padding:4px 8px;font-size:11px;color:#3d4757;text-align:center;white-space:nowrap;">${firstNm || '-'}</td>
+      <td style="padding:4px 8px;font-size:11px;color:#3d4757;text-align:center;white-space:nowrap;">${_escapeHtml(firstNm || '-')}</td>
       <td style="padding:4px 8px;font-size:11px;text-align:center;white-space:nowrap;">${perceptionCell}</td>
       <td style="padding:4px 8px;font-size:11px;color:#5a6577;text-align:center;white-space:nowrap;">${lc || '-'}</td>
       <td style="padding:4px 8px;font-size:11px;color:#5a6577;text-align:center;white-space:nowrap;">${lm || '-'}</td>
@@ -6301,7 +6331,7 @@ function _renderIsListLevel3(kind, owner, opts) {
     // ★ 検索中は該当行を自動展開してヒアリング文を表示（個別トグル状態は維持）
     const expanded = _isListL3Expanded.has(ckey) || _searchActive;
     const arrow = expanded ? '▼' : '▶';
-    const toggleBtn = `<span onclick="event.stopPropagation();isListToggleCompany('${ckey.replace(/'/g, "\\'")}')"
+    const toggleBtn = `<span onclick="event.stopPropagation();isListToggleCompany('${_escJsAttr(ckey)}')"
       style="display:inline-block;width:14px;text-align:center;cursor:pointer;color:#7c8798;font-size:9px;margin-right:4px;user-select:none;"
       title="担当者一覧を${expanded ? '閉じる' : '開く'}（${contacts.length}件）">${arrow}</span>`;
     const countBadge = `<span style="font-size:9px;color:#7c8798;margin-left:4px;">(${contacts.length})</span>`;
@@ -6320,7 +6350,7 @@ function _renderIsListLevel3(kind, owner, opts) {
       ${checkCell}
       <td style="padding:4px 8px;font-size:11px;font-weight:500;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${toggleBtn}${companyCell}${countBadge}${hearBadge}</td>
       <td style="padding:4px 8px;font-size:11px;text-align:center;white-space:nowrap;">
-        ${r.perceptionFlow ? `<span style="background:${accentBg};color:${accent};font-size:10px;padding:1px 6px;border-radius:4px;font-weight:600;">${r.perceptionFlow}</span>` : '—'}
+        ${r.perceptionFlow ? `<span style="background:${accentBg};color:${accent};font-size:10px;padding:1px 6px;border-radius:4px;font-weight:600;">${_escapeHtml(r.perceptionFlow)}</span>` : '—'}
       </td>
       <td style="padding:4px 8px;font-size:11px;color:#5a6577;text-align:center;white-space:nowrap;">${safeLastContact || '—'}</td>
       <td style="padding:4px 8px;font-size:11px;color:#5a6577;text-align:center;white-space:nowrap;">${safeLastMet || '—'}</td>
@@ -6554,7 +6584,11 @@ function renderIsKpis() {
   renderIsKpiDetail('contrib', sDeals);
 
   // ② ヨミ化数
-  const yomiDeals = allDeals.filter(d => {
+  // ★ 2026-11-11 修正: 来期着地の進行中案件（futureDeals）も含める。担当者別テーブル（_getMemberDealsForKind）は
+  //   10/30 から含めているのに、このカードだけ入っておらず、カードとテーブル合計が合わなかった。
+  //   スナップショット閲覧中は含めない（過去時点の来期着地案件は保存されていないため）。
+  const _futForYomi = (typeof snapshotView !== 'undefined' && snapshotView) ? [] : (futureDeals || []);
+  const yomiDeals = [...allDeals, ..._futForYomi].filter(d => {
     if (!dateInMonths(d.yomiDecidedDate)) return false;
     if (d.stage === 'E' || d.stage === 'D') return false;
     if (d.stage === '失注' && d.lostLabel === '未ヨミ化') return false;
@@ -6966,6 +7000,14 @@ function _escapeHtml(s) {
   return String(s == null ? '' : s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+// ★ 2026-11-11 追加（セキュリティ）: onclick="fn('…')" のように、タグの中の処理へ埋め込む文字用。
+//   「'」と「\」を処理の文字として安全な形にしてから、HTMLとしても無害化する。
+//   （これまでの「'」→「&#39;」や「'」→「\'」だけの置き換えは、名前に「'」「"」「\」があると処理が壊れた）
+function _escJsAttr(s) {
+  return _escapeHtml(String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r?\n/g, '\\n'));
+}
+// encodeURIComponent は「'」を変換しないので、onclick に埋め込むときは「'」も変換する
+function _encUC(s) { return encodeURIComponent(String(s == null ? '' : s)).replace(/'/g, '%27'); }
 
 // 集計だけ保持（カード内には詳細を表示しない）
 function renderIsKpiDetail(key, deals) {
@@ -7533,16 +7575,16 @@ function _buildLostListHtml(deals, gDef) {
             </td>
             <td style="${tdBase('right','#5a6577')}">${amt}</td>
             <td style="${tdBase('right','#0a5bd3')}">${lt}</td>
-            <td style="${tdBase('left','#5a6577', ellipsis)}" title="${mgmtVal}">${mgmtVal}</td>
-            <td style="${tdBase('center','#0a5bd3')}">${svc}</td>
+            <td style="${tdBase('left','#5a6577', ellipsis)}" title="${_escapeHtml(mgmtVal)}">${_escapeHtml(mgmtVal)}</td>
+            <td style="${tdBase('center','#0a5bd3')}">${_escapeHtml(svc)}</td>
             <td style="${tdBase('center','#3d4757')}">${reupHtml}</td>
-            <td style="${tdBase('left','#dc2626', ellipsis)}" title="${nyuVal}">${nyuVal}</td>
+            <td style="${tdBase('left','#dc2626', ellipsis)}" title="${_escapeHtml(nyuVal)}">${_escapeHtml(nyuVal)}</td>
           </tr>`;
         }).join('');
         return `
           <div style="margin:6px 0 4px 0;">
             <div style="font-size:11px;font-weight:700;color:#5a6577;padding:3px 0 2px;display:flex;align-items:center;gap:4px;">
-              <span style="color:#cdd5e0;">┣</span> ${member}
+              <span style="color:#cdd5e0;">┣</span> ${_escapeHtml(member)}
               <span style="font-size:10px;font-weight:400;color:#a8b2c1;">${mDeals.length}件</span>
             </div>
             <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
@@ -7616,7 +7658,7 @@ function _buildLostMatrixHtml(deals, gDef) {
     }).join('');
     const rowPct = pct(mDeals.length);
     return `<tr>
-      <td style="padding:6px 8px;font-size:11px;font-weight:600;color:#5a6577;white-space:nowrap;border-right:1px solid #eef1f6;">${m}</td>
+      <td style="padding:6px 8px;font-size:11px;font-weight:600;color:#5a6577;white-space:nowrap;border-right:1px solid #eef1f6;">${_escapeHtml(m)}</td>
       ${cells}
       <td style="padding:6px 8px;text-align:center;font-size:11px;font-weight:700;color:${gDef.color};border-left:1px solid #eef1f6;">${rowPct}</td>
     </tr>`;
@@ -8237,7 +8279,7 @@ function _lbRow(cls, label, a, extra) {
 function _lbDrawTable() {
   const tb = document.getElementById('lbTbody'); if (!tb) return;
   const D = _lb.data.cur, o = _lb.openRows;
-  const tog = (k, open) => `<span class="lb-tog ${open ? 'open' : ''}" onclick="_lbToggleRow('${_lbEsc(k).replace(/'/g, '&#39;')}')"><i class="ti ti-chevron-right"></i></span>`;
+  const tog = (k, open) => `<span class="lb-tog ${open ? 'open' : ''}" onclick="_lbToggleRow('${_escJsAttr(k)}')"><i class="ti ti-chevron-right"></i></span>`;
   let h = _lbRow('total', '全体', D.total, tog('__total__', o.has('__total__')));
   if (o.has('__total__')) D.total.mgmt.forEach(m => { h += _lbRow('mg', '└ ' + m.label, m); });
   D.members.forEach(mem => {
@@ -8675,7 +8717,7 @@ function _renderLostAnalysisCardsLegacy() {
           nyusakiHtml = `<div style="margin:4px 0 2px 16px;display:flex;flex-direction:column;gap:2px;">` +
             topN.map(([n, c]) =>
               `<div style="display:flex;justify-content:space-between;font-size:10px;color:#7c8798;">
-                 <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;" title="${n}">↳ ${n}</span>
+                 <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;" title="${_escapeHtml(n)}">↳ ${_escapeHtml(n)}</span>
                  <span style="font-weight:700;margin-left:4px;color:${lc.color};">${c}件</span>
                </div>`
             ).join('') + `</div>`;
@@ -8741,12 +8783,12 @@ function renderDealList(activePipe) {
         <td class="px-2 py-1.5 truncate max-w-xs" title="${_escapeHtml(d.company||'')}">
           ${d.hubspotId
             ? `<a href="https://app.hubspot.com/contacts/23871469/record/0-3/${d.hubspotId}" target="_blank" rel="noopener" class="hover:underline" style="color:#2575f0">${_escapeHtml(d.company||'-')}</a>`
-            : (d.company||'-')}
+            : _escapeHtml(d.company||'-')}
         </td>
-        <td class="px-2 py-1.5">${d.name}</td>
+        <td class="px-2 py-1.5">${_escapeHtml(d.name)}</td>
         <td class="px-2 py-1.5 text-center"><b class="${stageColor[d.stage]||''}">${d.stage}</b></td>
         <td class="px-2 py-1.5 text-center">${parseInt(d.month.slice(5))}月</td>
-        <td class="px-2 py-1.5 text-center text-slate-600">${d.product||'-'}</td>
+        <td class="px-2 py-1.5 text-center text-slate-600">${_escapeHtml(d.product||'-')}</td>
         <td class="px-2 py-1.5 text-right ${d.estimated?'text-amber-600':''}" title="${d.estimated?'概算':'入力値'}">${fmt(d.amount)}${d.estimated?' *':''}</td>
       </tr>`).join('');
 }
@@ -8997,22 +9039,30 @@ function applyWinRates() {
     cols.forEach(prod => {
       const id = `wr-${stage.replace('+','p')}-${prod}`;
       const el = document.getElementById(id);
-      if (el) newRates[stage][prod] = parseFloat(el.value) / 100;
+      if (!el) return;
+      // ★ 2026-11-11 修正: 空欄や数字でない入力は「変更なし」として扱う（今の個別設定があればそれを残し、無ければ既定値のまま）
+      const v = parseFloat(el.value);
+      const cur = customWinRates[stage] ? customWinRates[stage][prod] : undefined;
+      if (isFinite(v) && v >= 0 && v <= 100) newRates[stage][prod] = v / 100;
+      else if (typeof cur === 'number' && isFinite(cur)) newRates[stage][prod] = cur;
     });
   });
   customWinRates = newRates;
   const eEl = document.getElementById('wr-e-rate');
-  if (eEl) eWinRate = parseFloat(eEl.value) / 100;
+  if (eEl) { const ev = parseFloat(eEl.value); if (isFinite(ev) && ev >= 0 && ev <= 100) eWinRate = ev / 100; }   // ★ 2026-11-11: 空欄は変更なし
   closeWinRatesModal();
   render();
   // GAS に保存（バックグラウンド）
-  gasPost('saveWinRates', { winRates: { customWinRates, eWinRate } });
+  // ★ 2026-11-11 修正: 保存した勝率を控え（35分）、保存できたら最新データを取り直して本体のキャッシュも入れ替える
+  _winRatesLocalSet({ customWinRates, eWinRate });
+  gasPost('saveWinRates', { winRates: { customWinRates, eWinRate } }).then(r => { if (r && r.ok) { try { fetchFromSheets(true, true); } catch (e) {} } });
 }
 function resetWinRates() {
   if (!confirm('全ての勝率をデフォルト値に戻しますか？')) return;
   customWinRates = {};
   eWinRate = 0.10;
-  gasPost('saveWinRates', { winRates: { customWinRates: {}, eWinRate: 0.10 } });
+  _winRatesLocalSet({ customWinRates: {}, eWinRate: 0.10 });   // ★ 2026-11-11: 上と同じ理由
+  gasPost('saveWinRates', { winRates: { customWinRates: {}, eWinRate: 0.10 } }).then(r => { if (r && r.ok) { try { fetchFromSheets(true, true); } catch (e) {} } });
   renderWinRatesTable();
   renderAccuracyMonitor();
 }
@@ -9334,7 +9384,7 @@ function toggleChartMemberDeals(memberName, type) {
         <span style="background:${stgCol}22;color:${stgCol};font-weight:700;padding:1px 6px;border-radius:4px;font-size:10px;white-space:nowrap;">${d.stage}</span>
       </td>
       <td style="padding:3px 6px;font-size:11px;text-align:center;color:#5a6577;white-space:nowrap;">${closeDisp}</td>
-      <td style="padding:3px 6px;font-size:11px;text-align:center;color:#0a5bd3;white-space:nowrap;">${svc}</td>
+      <td style="padding:3px 6px;font-size:11px;text-align:center;color:#0a5bd3;white-space:nowrap;">${_escapeHtml(svc)}</td>
       <td style="padding:3px 6px;font-size:11px;text-align:right;color:#3d4757;white-space:nowrap;">${amt}</td>
       <td style="padding:3px 6px;font-size:11px;text-align:right;color:#0a5bd3;white-space:nowrap;">${ltDays}</td>
       <td style="padding:3px 6px;font-size:11px;text-align:center;white-space:nowrap;">${nxtDate}</td>
@@ -9515,8 +9565,16 @@ const LANDING_MEMO_KEY = 'fs-landing-memo-v1';
 let _landingMemoMap = {};
 try { _landingMemoMap = JSON.parse(localStorage.getItem(LANDING_MEMO_KEY) || '{}'); } catch(e) { _landingMemoMap = {}; }
 // メモ更新時のハンドラ（再レンダリングはしない＝フォーカスが切れる原因になるため）
-function setLandingDealMemo(key, value) {
+function setLandingDealMemo(key, value, el) {
+  // ★ 2026-11-11 修正: 欄に表示されていた内容から変えていないときは保存しない。
+  //   これまでは欄をクリックして離すだけで毎回保存していたため、表示が古いままの欄に触れると、
+  //   他の人が書いた新しいメモを古い内容で上書きしていた（onchange の直後の onblur による二重保存も防ぐ）。
+  if (el && typeof el.defaultValue === 'string') {
+    if (value === el.defaultValue) return;
+    el.defaultValue = value;
+  }
   const v = (value && value.trim()) ? value : '';
+  _landingNotePending('memo', key, v);   // ★ 2026-11-11: 保存が届くまでの間、サーバーの古い返事で戻さない
   if (!v) delete _landingMemoMap[key];
   else _landingMemoMap[key] = v;
   try { localStorage.setItem(LANDING_MEMO_KEY, JSON.stringify(_landingMemoMap)); } catch(e) {}
@@ -9536,6 +9594,32 @@ const LANDING_POLL_MS = 30000; // 30秒
 let _landingPollTimer = null;
 let _landingLastClassJson = '';
 let _landingLastMemoJson  = '';
+// ★ 2026-11-11 追加（保存した値が古い値に戻る件）
+let _landingFreshAt = 0;                              // 最新（キャッシュなし）の共有データを最後に受け取った時刻
+const LANDING_PENDING_MS = 90000;                     // この画面で変えた値は、90秒間はサーバーの返事より優先する
+const _landingPending = { cls: {}, memo: {} };        // key -> { v, t }（この画面で変えた直後の値）
+function _landingNotePending(kind, key, v) { _landingPending[kind][key] = { v: v, t: Date.now() }; }
+// サーバーから来た一覧に、この画面で変えた直後の値を重ねる（保存が届く前の返事で古い値に戻さないため）
+function _landingApplyPending(kind, map) {
+  const now = Date.now(), pend = _landingPending[kind];
+  Object.keys(pend).forEach(k => {
+    if (now - pend[k].t > LANDING_PENDING_MS) { delete pend[k]; return; }
+    if (pend[k].v) map[k] = pend[k].v; else delete map[k];
+  });
+  return map;
+}
+// 勝率: この画面で保存した値を35分間だけ覚えておく（本体のキャッシュが入れ替わるまでの間、古い勝率に戻さないため）
+const WINRATES_LOCAL_KEY = 'fs-winrates-local-v1';
+const WINRATES_LOCAL_MS = 35 * 60 * 1000;
+function _winRatesLocalSet(wr) { try { localStorage.setItem(WINRATES_LOCAL_KEY, JSON.stringify({ at: Date.now(), wr: wr })); } catch (e) {} }
+function _winRatesLocalGet() {
+  try {
+    const o = JSON.parse(localStorage.getItem(WINRATES_LOCAL_KEY) || 'null');
+    if (!o || !o.wr) return null;
+    if (Date.now() - o.at > WINRATES_LOCAL_MS) { localStorage.removeItem(WINRATES_LOCAL_KEY); return null; }
+    return o.wr;
+  } catch (e) { return null; }
+}
 
 async function _pollLandingShared() {
   if (!GAS_URL) return;
@@ -9546,7 +9630,9 @@ async function _pollLandingShared() {
     const json = await res.json();
     if (!json || !json.ok) return;
     let changed = false;
+    _landingFreshAt = Date.now();   // ★ 2026-11-11: 最新の共有データを受け取れた
     if (json.landingClassMap && typeof json.landingClassMap === 'object') {
+      _landingApplyPending('cls', json.landingClassMap);   // ★ 2026-11-11: この画面で変えた直後の値を優先
       const nj = JSON.stringify(json.landingClassMap);
       if (nj !== _landingLastClassJson) {
         _landingClassMap = json.landingClassMap;
@@ -9556,6 +9642,7 @@ async function _pollLandingShared() {
       }
     }
     if (json.landingMemoMap && typeof json.landingMemoMap === 'object') {
+      _landingApplyPending('memo', json.landingMemoMap);   // ★ 2026-11-11: この画面で変えた直後の値を優先
       const nj = JSON.stringify(json.landingMemoMap);
       if (nj !== _landingLastMemoJson) {
         _landingMemoMap = json.landingMemoMap;
@@ -9610,6 +9697,7 @@ function _getLandingSharedUser() {
 // セレクト変更時のハンドラ
 function setLandingDealClass(key, value) {
   const v = (!value || value === 'none' || value === '') ? '' : value;
+  _landingNotePending('cls', key, v);   // ★ 2026-11-11: 保存が届くまでの間、サーバーの古い返事で戻さない
   if (!v) delete _landingClassMap[key];
   else _landingClassMap[key] = v;
   try { localStorage.setItem(LANDING_CLASS_KEY, JSON.stringify(_landingClassMap)); } catch(e) {}
@@ -9780,7 +9868,7 @@ function _renderLandingHierarchy(col) {
     const uKey = `unit:${u.unit}`;
     const uOpen = _landingExpanded.has(uKey);
     // ユニット行
-    body += `<tr style="background:#f3f8fe;border-bottom:1px solid #c3f1ff;cursor:pointer;" onclick="toggleLandingNode('${uKey.replace(/'/g,"\\'")}')">
+    body += `<tr style="background:#f3f8fe;border-bottom:1px solid #c3f1ff;cursor:pointer;" onclick="toggleLandingNode('${_escJsAttr(uKey)}')">
       <td style="padding:6px 4px;text-align:center;color:${purple};font-weight:700;">${arrow(uOpen)}</td>
       <td style="padding:6px 8px;font-weight:700;color:${purple};font-size:12px;">${u.unit} <span style="font-size:10px;color:#a8b2c1;font-weight:400;">(${u.members.length}名)</span></td>
       ${td(fmt(u.target), { fw: '700', color: purple })}
@@ -9796,9 +9884,9 @@ function _renderLandingHierarchy(col) {
         const mKey = `mem:${u.unit}|${m.name}`;
         const mOpen = _landingExpanded.has(mKey);
         // メンバー行
-        body += `<tr style="background:#f6f8fb;border-bottom:1px solid #eef1f6;cursor:pointer;" onclick="toggleLandingNode('${mKey.replace(/'/g,"\\'")}')">
+        body += `<tr style="background:#f6f8fb;border-bottom:1px solid #eef1f6;cursor:pointer;" onclick="toggleLandingNode('${_escJsAttr(mKey)}')">
           <td style="padding:5px 4px;text-align:center;color:#7c8798;padding-left:20px;">${arrow(mOpen)}</td>
-          <td style="padding:5px 8px;color:#3d4757;font-weight:600;font-size:11px;padding-left:24px;">${m.name} <span style="font-size:10px;color:#a8b2c1;font-weight:400;">(${m.deals.length}件)</span></td>
+          <td style="padding:5px 8px;color:#3d4757;font-weight:600;font-size:11px;padding-left:24px;">${_escapeHtml(m.name)} <span style="font-size:10px;color:#a8b2c1;font-weight:400;">(${m.deals.length}件)</span></td>
           ${td(fmt(m.target))}
           ${td(fmt(m.wonAmt) + cntLine(m.wonCnt), { color: '#059669' })}
           ${td(fmt(m.min) + cntLine(m.minCnt), { color: '#dc2626' })}
@@ -9843,7 +9931,7 @@ function _renderLandingHierarchy(col) {
               const companyHtml = hubUrl
                 ? `<a href="${hubUrl}" target="_blank" rel="noopener" style="color:#2575f0;text-decoration:none;font-weight:500;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${_escapeHtml(d.company || '-')}</a>`
                 : `<span style="color:#3d4757;font-weight:500;">${_escapeHtml(d.company || '-')}</span>`;
-              const sel = `<select onchange="setLandingDealClass('${key.replace(/'/g,"\\'")}', this.value)"
+              const sel = `<select onchange="setLandingDealClass('${_escJsAttr(key)}', this.value)"
                             style="font-size:10px;padding:2px 4px;border:1px solid #cdd5e0;border-radius:4px;background:white;cursor:pointer;width:70px;">
                 <option value=""    ${cls===''   ?'selected':''}>該当なし</option>
                 <option value="min" ${cls==='min'?'selected':''}>Min</option>
@@ -9856,8 +9944,8 @@ function _renderLandingHierarchy(col) {
               const memoEsc = _escapeHtml(memo);
               const memoTitle = memo ? `title="${memoEsc}"` : 'title="クリックしてメモを入力（改行可）"';
               const memoInput = `<textarea rows="1"
-                onchange="setLandingDealMemo('${key.replace(/'/g,"\\'")}', this.value); this.title = this.value || 'クリックしてメモを入力（改行可）';"
-                onblur="setLandingDealMemo('${key.replace(/'/g,"\\'")}', this.value); this.style.height='22px';"
+                onchange="setLandingDealMemo('${_escJsAttr(key)}', this.value, this); this.title = this.value || 'クリックしてメモを入力（改行可）';"
+                onblur="setLandingDealMemo('${_escJsAttr(key)}', this.value, this); this.style.height='22px';"
                 onfocus="this.style.borderColor='#2575f0'; this.style.height='80px';"
                 ${memoTitle}
                 placeholder="メモを入力（Enterで改行）..."
@@ -9880,7 +9968,7 @@ function _renderLandingHierarchy(col) {
                     <span style="flex:1.4;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${_escapeHtml(d.company || '')}">${companyHtml}</span>
                     <span class="${stClass}" style="width:42px;text-align:center;font-weight:700;font-size:10px;flex-shrink:0;">${stageLabel}</span>
                     <span style="width:62px;text-align:center;color:#7c8798;white-space:nowrap;font-size:10px;flex-shrink:0;">${closeStr}</span>
-                    <span style="width:70px;text-align:center;color:#0a5bd3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px;flex-shrink:0;" title="${d.product || ''}">${d.product || '-'}</span>
+                    <span style="width:70px;text-align:center;color:#0a5bd3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px;flex-shrink:0;" title="${_escapeHtml(d.product || '')}">${_escapeHtml(d.product || '-')}</span>
                     <span style="width:72px;text-align:right;font-weight:600;color:#3d4757;white-space:nowrap;font-size:10px;flex-shrink:0;">${fmt(d.amount || 0)}</span>
                     <span style="width:72px;text-align:center;flex-shrink:0;">${sel}</span>
                     <span style="flex:1.6;min-width:0;align-self:center;">${memoInput}</span>
@@ -9898,7 +9986,7 @@ function _renderLandingHierarchy(col) {
   if (otherAgg) {
     const uKey = `unit:その他`;
     const uOpen = _landingExpanded.has(uKey);
-    body += `<tr style="background:#f9fafb;border-bottom:1px solid #e5e7eb;cursor:pointer;" onclick="toggleLandingNode('${uKey.replace(/'/g,"\\'")}')">
+    body += `<tr style="background:#f9fafb;border-bottom:1px solid #e5e7eb;cursor:pointer;" onclick="toggleLandingNode('${_escJsAttr(uKey)}')">
       <td style="padding:6px 4px;text-align:center;color:#7c8798;font-weight:700;">${arrow(uOpen)}</td>
       <td style="padding:6px 8px;font-weight:700;color:#7c8798;font-size:12px;">その他 <span style="font-size:10px;color:#a8b2c1;font-weight:400;">(${otherAgg.members.length}名・ユニット非所属)</span></td>
       ${td(fmt(otherAgg.target), { fw: '700', color: '#a8b2c1' })}
@@ -9912,9 +10000,9 @@ function _renderLandingHierarchy(col) {
       otherAgg.members.forEach(m => {
         const mKey = `mem:その他|${m.name}`;
         const mOpen = _landingExpanded.has(mKey);
-        body += `<tr style="background:#f6f8fb;border-bottom:1px solid #eef1f6;cursor:pointer;" onclick="toggleLandingNode('${mKey.replace(/'/g,"\\'")}')">
+        body += `<tr style="background:#f6f8fb;border-bottom:1px solid #eef1f6;cursor:pointer;" onclick="toggleLandingNode('${_escJsAttr(mKey)}')">
           <td style="padding:5px 4px;text-align:center;color:#7c8798;padding-left:20px;">${arrow(mOpen)}</td>
-          <td style="padding:5px 8px;color:#3d4757;font-weight:600;font-size:11px;padding-left:24px;">${m.name} <span style="font-size:10px;color:#a8b2c1;font-weight:400;">(${m.deals.length}件)</span></td>
+          <td style="padding:5px 8px;color:#3d4757;font-weight:600;font-size:11px;padding-left:24px;">${_escapeHtml(m.name)} <span style="font-size:10px;color:#a8b2c1;font-weight:400;">(${m.deals.length}件)</span></td>
           ${td(fmt(m.target))}
           ${td(fmt(m.wonAmt) + cntLine(m.wonCnt), { color: '#059669' })}
           ${td(fmt(m.min) + cntLine(m.minCnt), { color: '#dc2626' })}
@@ -9949,7 +10037,7 @@ function _renderLandingHierarchy(col) {
               const companyHtml = hubUrl
                 ? `<a href="${hubUrl}" target="_blank" rel="noopener" style="color:#2575f0;text-decoration:none;font-weight:500;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${_escapeHtml(d.company || '-')}</a>`
                 : `<span style="color:#3d4757;font-weight:500;">${_escapeHtml(d.company || '-')}</span>`;
-              const sel = `<select onchange="setLandingDealClass('${key.replace(/'/g,"\\'")}', this.value)"
+              const sel = `<select onchange="setLandingDealClass('${_escJsAttr(key)}', this.value)"
                             style="font-size:10px;padding:2px 4px;border:1px solid #cdd5e0;border-radius:4px;background:white;cursor:pointer;width:70px;">
                 <option value=""    ${cls===''   ?'selected':''}>該当なし</option>
                 <option value="min" ${cls==='min'?'selected':''}>Min</option>
@@ -9960,8 +10048,8 @@ function _renderLandingHierarchy(col) {
               const memoEsc = _escapeHtml(memo);
               const memoTitle = memo ? `title="${memoEsc}"` : 'title="クリックしてメモを入力（改行可）"';
               const memoInput = `<textarea rows="1"
-                onchange="setLandingDealMemo('${key.replace(/'/g,"\\'")}', this.value); this.title = this.value || 'クリックしてメモを入力（改行可）';"
-                onblur="setLandingDealMemo('${key.replace(/'/g,"\\'")}', this.value); this.style.height='22px';"
+                onchange="setLandingDealMemo('${_escJsAttr(key)}', this.value, this); this.title = this.value || 'クリックしてメモを入力（改行可）';"
+                onblur="setLandingDealMemo('${_escJsAttr(key)}', this.value, this); this.style.height='22px';"
                 onfocus="this.style.borderColor='#2575f0'; this.style.height='80px';"
                 ${memoTitle}
                 placeholder="メモを入力（Enterで改行）..."
@@ -9979,7 +10067,7 @@ function _renderLandingHierarchy(col) {
                     <span style="flex:1.4;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${_escapeHtml(d.company || '')}">${companyHtml}</span>
                     <span class="${stClass}" style="width:42px;text-align:center;font-weight:700;font-size:10px;flex-shrink:0;">${stageLabel}</span>
                     <span style="width:62px;text-align:center;color:#7c8798;white-space:nowrap;font-size:10px;flex-shrink:0;">${closeStr}</span>
-                    <span style="width:70px;text-align:center;color:#0a5bd3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px;flex-shrink:0;" title="${d.product || ''}">${d.product || '-'}</span>
+                    <span style="width:70px;text-align:center;color:#0a5bd3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px;flex-shrink:0;" title="${_escapeHtml(d.product || '')}">${_escapeHtml(d.product || '-')}</span>
                     <span style="width:72px;text-align:right;font-weight:600;color:#3d4757;white-space:nowrap;font-size:10px;flex-shrink:0;">${fmt(d.amount || 0)}</span>
                     <span style="width:72px;text-align:center;flex-shrink:0;">${sel}</span>
                     <span style="flex:1.6;min-width:0;align-self:center;">${memoInput}</span>
@@ -10709,7 +10797,7 @@ function _renderForecastErrorBlock(purple) {
   const selMonth = rows.some(r => r.month === _forecastErrMonth) ? _forecastErrMonth : rows[rows.length - 1].month;
   const monthBtns = rows.map(r => {
     const on = r.month === selMonth;
-    return `<button onclick="setForecastErrMonth('${r.month}')" style="font-size:10px;font-weight:700;padding:3px 10px;border-radius:9999px;border:1px solid ${on ? purple : '#e2e7ef'};background:${on ? '#ede9fe' : '#ffffff'};color:${on ? purple : '#7c8798'};cursor:pointer;">${_reupYmLabel(r.month)}</button>`;
+    return `<button onclick="setForecastErrMonth('${_escJsAttr(r.month)}')" style="font-size:10px;font-weight:700;padding:3px 10px;border-radius:9999px;border:1px solid ${on ? purple : '#e2e7ef'};background:${on ? '#ede9fe' : '#ffffff'};color:${on ? purple : '#7c8798'};cursor:pointer;">${_reupYmLabel(r.month)}</button>`;
   }).join('');
 
   // 週の見出しは「月末までの何週前か」で揃える
@@ -10878,6 +10966,9 @@ function _renderLandingTrendChart() {
     const won = filtered.filter(d => d.s === 'S').reduce((s, d) => s + (d.a || 0), 0);
     let rawMin = 0, rawMid = 0, rawMax = 0;
     filtered.forEach(d => {
+      // ★ 2026-11-11 修正: その週の時点で失注（チャーン含む）だった案件は Min/Mid/Max に入れない。
+      //   分類は失注しても消えないため、失注後の週も金額が乗り続けていた（上の表は進行中の案件だけ）。
+      if (_snapStageOf(d.s) === '失注') return;
       // 旧フォーマット互換: hubspotIdキーで照合
       const key = `hs:${d.i}`;
       const cls = _landingClassMap[key];
@@ -10965,13 +11056,13 @@ function renderChartDetailTable(type, containerId) {
       const mid = 'cdm-' + r.name.replace(/[^a-zA-Z0-9぀-鿿]/g, '_');
       return `<tr class="border-b hover:bg-slate-50 text-xs" id="cd-row-${mid}">
         <td style="width:28px;padding:4px 4px;text-align:center;">
-          <button onclick="toggleChartMemberDeals('${r.name.replace(/'/g,"\\'")}','${type}')"
+          <button onclick="toggleChartMemberDeals('${_escJsAttr(r.name)}','${type}')"
                   id="cd-tog-${mid}"
                   style="background:none;border:1px solid #e2e7ef;border-radius:4px;cursor:pointer;padding:0 5px;font-size:10px;color:#a8b2c1;line-height:1.8;transition:all .15s;"
                   onmouseover="this.style.background='#eef1f6'"
                   onmouseout="this.style.background='none'">▶</button>
         </td>
-        <td class="px-2 py-1.5 font-medium">${r.name}</td>
+        <td class="px-2 py-1.5 font-medium">${_escapeHtml(r.name)}</td>
         <td class="px-2 py-1.5 text-right text-slate-500">${fmt(r.target)}</td>
         <td class="px-2 py-1.5 text-right text-slate-500">${fmt(r[needKey])}</td>
         <td class="px-2 py-1.5 text-right text-slate-500">${nc(r[needKey], r.target)}</td>
@@ -11233,11 +11324,11 @@ function renderECalendar() {
     const s = String(stage || '').trim();
     if (!s) return '';
     if (s.indexOf('失注') === 0 || s === 'チャーン') {
-      return `<span class="rounded px-1 text-[9px] font-bold" style="background:#fee2e2;color:#991b1b" title="${s}">${s.length > 6 ? s.slice(0, 6) + '…' : s}</span>`;
+      return `<span class="rounded px-1 text-[9px] font-bold" style="background:#fee2e2;color:#991b1b" title="${_escapeHtml(s)}">${_escapeHtml(s.length > 6 ? s.slice(0, 6) + '…' : s)}</span>`;
     }
     const sc = { 'E':{bg:'#eaf3fe',text:'#0a5bd3'}, 'D':{bg:'#d2e6fd',text:'#0b4196'}, 'C':{bg:'#d1fae5',text:'#065f46'}, 'C+':{bg:'#a7f3d0',text:'#047857'}, 'B':{bg:'#fef3c7',text:'#92400e'}, 'A':{bg:'#fed7aa',text:'#c2410c'}, 'S':{bg:'#fde68a',text:'#854d0e'} };
     const col = sc[s] || { bg:'#eef1f6', text:'#5a6577' };
-    return `<span class="rounded px-1 text-[9px] font-bold" style="background:${col.bg};color:${col.text}">${s}</span>`;
+    return `<span class="rounded px-1 text-[9px] font-bold" style="background:${col.bg};color:${col.text}">${_escapeHtml(s)}</span>`;
   }
   // 失注系判定（カード全体の見た目を落ち着かせる用）
   function isLostStage(stage) {
@@ -11265,21 +11356,21 @@ function renderECalendar() {
     const productHint = d.product ? ` / 検討領域:${d.product}` : '';
     let simBadge;
     if (sims.length > 0) {
-      simBadge = `<button onclick="event.stopPropagation();openSimilarModal('${encodeURIComponent(d.company||'')}','${encodeURIComponent(d.industry||'')}','${encodeURIComponent(d.product||'')}')" class="rounded-full px-1 hover:opacity-80" style="background:#fde68a;color:#92400e;font-weight:600;cursor:pointer" title="類似企業を見る (業種:${indDisp}${productHint})">類似${sims.length}</button>`;
+      simBadge = `<button onclick="event.stopPropagation();openSimilarModal('${_encUC(d.company||'')}','${_encUC(d.industry||'')}','${_encUC(d.product||'')}')" class="rounded-full px-1 hover:opacity-80" style="background:#fde68a;color:#92400e;font-weight:600;cursor:pointer" title="類似企業を見る (業種:${_escapeHtml(indDisp + productHint)})">類似${sims.length}</button>`;
     } else if (!indDisp) {
       simBadge = `<span class="rounded-full px-1" style="background:#fef3c7;color:#92400e" title="取引側の業種_baseconnect 列が空です">業種未設定</span>`;
     } else if (masterCount === 0) {
       simBadge = `<span class="rounded-full px-1" style="background:#fee2e2;color:#991b1b;font-weight:600" title="類似企業マスタが0件です。FS GASのデプロイ・新スプシの閲覧権限を確認してください。">⚠ マスタ0件</span>`;
     } else {
-      simBadge = `<span class="rounded-full px-1" style="background:#eef1f6;color:#a8b2c1" title="業種「${indDisp}」に該当する企業がマスタ${masterCount}件中にありません">該当なし(${indDisp}/マスタ${masterCount})</span>`;
+      simBadge = `<span class="rounded-full px-1" style="background:#eef1f6;color:#a8b2c1" title="業種「${_escapeHtml(indDisp)}」に該当する企業がマスタ${masterCount}件中にありません">該当なし(${_escapeHtml(indDisp)}/マスタ${masterCount})</span>`;
     }
     return `<div class="rounded p-1 mb-0.5 text-[10px] leading-tight" style="background:${cardBg};border-left:3px solid ${cardBorder}">
       <a ${hubUrl} class="font-medium block truncate hover:underline" style="${nameStyle}" title="${_escapeHtml(d.company)}${d.stage ? ' / ステージ:' + d.stage : ''}">${_escapeHtml(d.company || '-')}</a>
       <div class="flex items-center justify-between mt-0.5 flex-wrap gap-0.5">
-        <span class="font-semibold" style="color:${lost ? '#a8b2c1' : c.main}">${shortName}</span>
+        <span class="font-semibold" style="color:${lost ? '#a8b2c1' : c.main}">${_escapeHtml(shortName)}</span>
         <div class="flex items-center gap-0.5 flex-wrap">
           ${stageBadgeHtml(d.stage)}
-          ${d.product ? `<span class="rounded-full px-1" style="background:${pb.bg};color:${pb.text}">${d.product}</span>` : ''}
+          ${d.product ? `<span class="rounded-full px-1" style="background:${pb.bg};color:${pb.text}">${_escapeHtml(d.product)}</span>` : ''}
         </div>
       </div>
       <div class="mt-0.5">${simBadge}</div>
@@ -11361,7 +11452,7 @@ function renderECalendar() {
           <a ${hubUrl} class="font-medium block truncate hover:underline" style="color:#28303d" title="${_escapeHtml(d.company)}">${_escapeHtml(d.company || '-')}</a>
           <div class="flex items-center gap-1 mt-0.5">
             <span class="font-semibold" style="color:${c.main}">${shortName}</span>
-            ${d.product ? `<span class="rounded-full px-1" style="background:${pb.bg};color:${pb.text}">${d.product}</span>` : ''}
+            ${d.product ? `<span class="rounded-full px-1" style="background:${pb.bg};color:${pb.text}">${_escapeHtml(d.product)}</span>` : ''}
           </div>
         </div>`;
       }).join('');
@@ -11452,7 +11543,7 @@ function renderECalToday() {
     return `
     <div class="flex items-center justify-between p-3 rounded-lg border" style="border-color:#e2e7ef;background:${zero ? '#fafafa' : '#f6f8fb'};${zero ? 'opacity:0.55;' : ''}">
       <div class="flex flex-col">
-        <div class="font-semibold ${zero ? 'text-slate-400' : 'text-slate-700'} text-sm">${r.name}</div>
+        <div class="font-semibold ${zero ? 'text-slate-400' : 'text-slate-700'} text-sm">${_escapeHtml(r.name)}</div>
         <div class="text-[11px] flex items-center gap-2 mt-1">
           <span style="color:${zero ? '#a8b2c1' : '#0fa6e0'}">1回目 ${r.c1}</span>
           <span style="color:${zero ? '#a8b2c1' : '#0fa6e0'}">2回目 ${r.c2}</span>
@@ -11500,7 +11591,7 @@ function renderECalWeekly() {
     const pct = max > 0 ? (r.count/max*100) : 0;
     return `
     <div class="flex items-center gap-3">
-      <div class="w-24 text-xs font-semibold text-slate-700 text-right truncate" title="${r.name}">${r.name}</div>
+      <div class="w-24 text-xs font-semibold text-slate-700 text-right truncate" title="${_escapeHtml(r.name)}">${_escapeHtml(r.name)}</div>
       <div class="flex-1 relative h-7 rounded" style="background:#eef1f6">
         <div class="h-full rounded flex items-center justify-end pr-2" style="min-width:24px;width:${pct}%;background:#2575f0">
           <span class="text-xs font-bold text-white">${r.count}</span>
@@ -11860,7 +11951,7 @@ function renderECalReup() {
   const periods = Array.from(new Set(allRows.map(r => r.reupTiming)))
     .sort((a,b) => (isYm(a)?0:1) - (isYm(b)?0:1) || String(a).localeCompare(String(b)));
   if (selP) {
-    selP.innerHTML = '<option value="">時期: 全て</option>' + periods.map(p => `<option value="${p}" ${p===eReupPeriod?'selected':''}>${ymLabel(p)}</option>`).join('');
+    selP.innerHTML = '<option value="">時期: 全て</option>' + periods.map(p => `<option value="${_escapeHtml(p)}" ${p===eReupPeriod?'selected':''}>${_escapeHtml(ymLabel(p))}</option>`).join('');
     if (eReupPeriod && !periods.includes(eReupPeriod)) eReupPeriod = '';
   }
 
@@ -11923,7 +12014,7 @@ function renderECalReup() {
       <div class="rounded-lg p-3 cursor-pointer select-none transition-colors" onclick="eReupToggleMember('${encodeURIComponent(n)}')"
            style="background:${sel ? '#fef3c7' : '#f6f8fb'};border:2px solid ${sel ? '#b45309' : '#e2e7ef'}"
            title="クリックで${sel ? '選択解除' : '絞り込み'}">
-        <div class="text-xs truncate font-semibold" style="color:${sel ? '#92400e' : '#7c8798'}">${n}${sel ? ' ✓' : ''}</div>
+        <div class="text-xs truncate font-semibold" style="color:${sel ? '#92400e' : '#7c8798'}">${_escapeHtml(n)}${sel ? ' ✓' : ''}</div>
         <div class="text-xl font-bold" style="color:#b45309">${c}<span class="text-xs ml-1 font-semibold">件</span></div>
       </div>`;
     }).join('');
@@ -11983,7 +12074,7 @@ function renderECalReup() {
     if (r.judge === 'won') return `<span class="px-2 py-0.5 rounded-full text-[11px] font-bold whitespace-nowrap" style="background:#10b981;color:#ffffff" title="前回クローズ日より後に作成された取引が受注(S)になっています${via}">🏆 受注${r.judgeDate ? `(${r.judgeDate})` : ''}</span>`;
     // ★ 2026-08-12 追加: 新取引が進行中／再失注（次あり）／再失注（次なし）を区別する
     if (r.judge === 'active') return `<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap" style="background:#dcfce7;color:#166534" title="前回クローズ日より後に作成された取引が商談中です${via}">✅ 商談中${r.judgeDate ? `(${r.judgeDate})` : ''}</span>`;
-    if (r.judge === 'relost') return `<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap" style="background:#fef3c7;color:#92400e" title="再アップ後の取引も失注しています。次の再アップ時期が入力済み${via}">🔁 再失注 → 次 ${ymLabel(r.judgeNext)}</span>`;
+    if (r.judge === 'relost') return `<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap" style="background:#fef3c7;color:#92400e" title="再アップ後の取引も失注しています。次の再アップ時期が入力済み${via}">🔁 再失注 → 次 ${_escapeHtml(ymLabel(r.judgeNext))}</span>`;
     if (r.judge === 'relost_dead') return `<span class="px-2 py-0.5 rounded-full text-[11px] font-bold whitespace-nowrap" style="background:#dc2626;color:#ffffff" title="再アップ後の取引も失注し、次の再アップ時期が未入力です。このままだと誰も追えません${via}">⚠ 再失注・次なし</span>`;
     if (r.judge === 'success') return `<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap" style="background:#dcfce7;color:#166534" title="前回クローズ日より後に新しい取引が作成されています${via}">✅ 再アップ成功${r.judgeDate ? `(${r.judgeDate})` : ''}</span>`;
     if (r.judge === 'forgot')  return `<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap" style="background:#fee2e2;color:#991b1b" title="新取引がなく、IS保有リストにも未登録。コンタクト所有者の戻し忘れの可能性">⚠ 戻し忘れ</span>`;
@@ -12049,7 +12140,7 @@ function renderECalReup() {
   if (eReupGroupMode === 'month') {
     body.innerHTML = `<div class="border rounded-lg overflow-hidden" style="border-color:#e2e7ef">${sortedKeys.map(key => {
       const list = groups.get(key).slice().sort((a,b) => String(a.name).localeCompare(String(b.name),'ja'));
-      return `<div class="px-3 py-1.5 text-xs font-bold" style="background:#fef3c7;color:#92400e">🔁 ${ymLabel(key)}（${list.length}件）</div>${tableHtml(list)}`;
+      return `<div class="px-3 py-1.5 text-xs font-bold" style="background:#fef3c7;color:#92400e">🔁 ${_escapeHtml(ymLabel(key))}（${list.length}件）</div>${tableHtml(list)}`;
     }).join('')}</div>
     <div class="text-center mt-2">
       <button onclick="toggleEReupGroupMode()" class="px-3 py-1.5 text-xs border rounded text-slate-500 hover:bg-slate-50">
@@ -12471,7 +12562,7 @@ function renderIsMemberTable() {
   // 数値クリック→openIsMetricDetail を仕込む
   function clickable(value, label, member, kind) {
     if (value === 0) return `<span class="text-slate-400">0</span>`;
-    return `<button onclick="openIsMetricDetail('${escAttr(member)}', '${kind}', '${escAttr(label)}')" 
+    return `<button onclick="openIsMetricDetail('${_escJsAttr(member)}', '${kind}', '${_escJsAttr(label)}')" 
       class="font-semibold underline decoration-dotted hover:opacity-70 cursor-pointer">${value}</button>`;
   }
 
@@ -12492,7 +12583,7 @@ function renderIsMemberTable() {
 
     function clk(value, kind) {
       if (value === 0) return `<span style="color:${dimCol}">0</span>`;
-      return `<button onclick="openIsMetricDetail('${escAttr(member)}', '${kind}', '${escAttr(label)}')"
+      return `<button onclick="openIsMetricDetail('${_escJsAttr(member)}', '${kind}', '${_escJsAttr(label)}')"
         class="font-semibold underline decoration-dotted hover:opacity-70 cursor-pointer" style="color:${linkCol}">${value}</button>`;
     }
 
@@ -12518,7 +12609,7 @@ function renderIsMemberTable() {
     const s = statsFor(r.name);
     memberStatsMap[r.name] = s;
     return `<tr style="background:#ffffff;border-bottom:1px dashed #e2e7ef">
-      <td class="px-2 py-1 text-left font-medium sticky left-0 z-10" style="background:#ffffff">${r.name}</td>
+      <td class="px-2 py-1 text-left font-medium sticky left-0 z-10" style="background:#ffffff">${_escapeHtml(r.name)}</td>
       ${makeCells(s, r.name, r.name)}
     </tr>`;
   }).join('');
@@ -12883,7 +12974,7 @@ function openIsMetricDetail(memberArg, kind, label) {
   // フォーマッタ
   function rowHtml(d) {
     const company = d.company || '?';
-    const product = d.product || '-';
+    const product = _escapeHtml(d.product || '-');   // ★ 2026-11-11: 無害化してから使う
     const hubUrl = d.hubspotId ? `https://app.hubspot.com/contacts/23871469/record/0-3/${d.hubspotId}` : null;
     const companyHtml = hubUrl
       ? `<a href="${hubUrl}" target="_blank" rel="noopener" class="font-semibold hover:underline" style="color:${meta.color}">${_escapeHtml(company)}</a>`
@@ -12896,36 +12987,38 @@ function openIsMetricDetail(memberArg, kind, label) {
     if (kind === 'jisshi') {
       // 失注（未商談）= lostLabel '未ヨミ化': 未商談化理由を表示
       if (d.stage === '失注' && d.lostLabel === '未ヨミ化') {
-        const reason = (d.mishoshoReason || '').trim() || '-';
+        const reason = _escapeHtml((d.mishoshoReason || '').trim() || '-');   // ★ 2026-11-11: 無害化してから使う
         return `<li class="py-1">${companyHtml} <span class="text-slate-400">｜</span> <span class="text-slate-600">${product}</span> <span class="text-slate-400">｜</span> <span class="text-rose-600">未商談化理由: ${reason}</span></li>`;
       }
       // その他の失注: アポ実施日〜クローズ日のリードタイム + 導入先
       if (d.stage === '失注') {
         const close = _closeDateOf(d);
-        const lt = _calcLeadTimeDays(d.appointDate, close);
-        const ltStr = lt === 0 ? '実施後直後' : (lt != null ? `${_fmtMd(d.appointDate)}〜${_fmtMd(close)} (${lt}日)` : '-');
+        const apoD = _yomiDay(d.appointDate);   // ★ 2026-11-11 修正: アポ実施日は文字列なので日付に直す（直さないとリードタイムが常に「-」になる）
+        const lt = _calcLeadTimeDays(apoD, close);
+        const ltStr = lt === 0 ? '実施後直後' : (lt != null ? `${_fmtMd(apoD)}〜${_fmtMd(close)} (${lt}日)` : '-');
         return `<li class="py-1">${companyHtml} <span class="text-slate-400">｜</span> <span class="text-slate-600">${product}</span> <span class="text-slate-400">｜</span> <span class="text-slate-500">${ltStr}</span> <span class="text-slate-400">｜</span> <span class="text-rose-600">導入先: ${_escapeHtml(d.nyusaki || '-')}</span></li>`;
       }
       // D以上（パイプライン中）: 企業名｜検討サービス
       return `<li class="py-1">${companyHtml} <span class="text-slate-400">｜</span> <span class="text-slate-600">${product}</span></li>`;
     }
     if (kind === 'yomi') {
-      const apo = d.appointDate;
+      const apo = _yomiDay(d.appointDate);   // ★ 2026-11-11 修正: 文字列 → 日付
       if (d.stage === '失注') {
         const close = _closeDateOf(d);
         const lt = _calcLeadTimeDays(apo, close);
         const ltStr = lt === 0 ? '実施後直後' : (lt != null ? `${_fmtMd(apo)}〜${_fmtMd(close)} (${lt}日)` : '-');
         return `<li class="py-1">${companyHtml} <span class="text-slate-400">｜</span> <span class="text-slate-600">${product}</span> <span class="text-slate-400">｜</span> <span class="text-slate-500">${ltStr}</span> <span class="text-slate-400">｜</span> <span class="text-rose-600">導入先: ${_escapeHtml(d.nyusaki || '-')}</span></li>`;
       } else {
-        const lt = _calcLeadTimeDays(apo, d.yomiDecidedDate);
-        const ltStr = lt === 0 ? '実施後直後' : (lt != null ? `${_fmtMd(apo)}〜${_fmtMd(d.yomiDecidedDate)} (${lt}日)` : '-');
+        const lt = _calcLeadTimeDays(apo, _yomiDay(d.yomiDecidedDate));
+        const ltStr = lt === 0 ? '実施後直後' : (lt != null ? `${_fmtMd(apo)}〜${_fmtMd(_yomiDay(d.yomiDecidedDate))} (${lt}日)` : '-');
         return `<li class="py-1">${companyHtml} <span class="text-slate-400">｜</span> <span class="text-slate-600">${product}</span> <span class="text-slate-400">｜</span> <span class="text-slate-500">${ltStr}</span></li>`;
       }
     }
     if (kind === 'won') {
       const close = _closeDateOf(d);
-      const lt = _calcLeadTimeDays(d.appointDate, close);
-      const ltStr = lt === 0 ? '実施後直後' : (lt != null ? `${_fmtMd(d.appointDate)}〜${_fmtMd(close)} (${lt}日)` : '-');
+      const apoD = _yomiDay(d.appointDate);   // ★ 2026-11-11 修正: 文字列 → 日付
+      const lt = _calcLeadTimeDays(apoD, close);
+      const ltStr = lt === 0 ? '実施後直後' : (lt != null ? `${_fmtMd(apoD)}〜${_fmtMd(close)} (${lt}日)` : '-');
       const amt = '¥' + (d.amount||0).toLocaleString();
       return `<li class="py-1">${companyHtml} <span class="text-slate-400">｜</span> <span class="text-slate-600">${product}</span> <span class="text-slate-400">｜</span> <span class="font-semibold" style="color:${meta.color}">${amt}</span> <span class="text-slate-400">｜</span> <span class="text-slate-500">${ltStr}</span></li>`;
     }
@@ -12955,7 +13048,7 @@ function openIsMetricDetail(memberArg, kind, label) {
     bodyHtml = sortedKeys.map(k => {
       const ds = grouped[k];
       return `<div class="mb-4">
-        <h4 class="text-xs font-bold mb-1 px-2 py-1 rounded inline-block" style="background:${meta.color}20;color:${meta.color}">${k} <span class="text-slate-500 font-normal">(${ds.length}件)</span></h4>
+        <h4 class="text-xs font-bold mb-1 px-2 py-1 rounded inline-block" style="background:${meta.color}20;color:${meta.color}">${_escapeHtml(k)} <span class="text-slate-500 font-normal">(${ds.length}件)</span></h4>
         <ul class="ml-2 divide-y divide-slate-100 text-[12px]">${ds.map(rowHtml).join('')}</ul>
       </div>`;
     }).join('');
@@ -13132,9 +13225,9 @@ function _renderPastWonBody() {
       <td style="padding:6px 8px;font-size:12px;">${companyHtml}</td>
       <td style="padding:6px 8px;font-size:11px;color:#5a6577;white-space:nowrap;">${closeMonth}</td>
       <td style="padding:6px 8px;font-size:11px;color:#5a6577;white-space:nowrap;">${_escapeHtml(d.leadSource || '-')}</td>
-      <td style="padding:6px 8px;font-size:11px;color:#5a6577;white-space:nowrap;">${d.product || '-'}</td>
+      <td style="padding:6px 8px;font-size:11px;color:#5a6577;white-space:nowrap;">${_escapeHtml(d.product || '-')}</td>
       <td style="padding:6px 8px;text-align:center;">${badge}</td>
-      <td style="padding:6px 8px;font-size:11px;color:#5a6577;">${mgmtFor(d)}</td>
+      <td style="padding:6px 8px;font-size:11px;color:#5a6577;">${_escapeHtml(mgmtFor(d))}</td>
     </tr>`;
   }).join('');
 
@@ -13369,7 +13462,7 @@ function _renderReschedBody() {
     return `<tr style="border-bottom:1px solid #eef1f6;">
       <td style="padding:6px 8px;font-size:12px;">${companyHtml}</td>
       <td style="padding:6px 8px;font-size:11px;color:#5a6577;white-space:nowrap;">${_escapeHtml(d.leadSource || '-')}</td>
-      <td style="padding:6px 8px;font-size:11px;color:#5a6577;white-space:nowrap;">${d.product || '-'}</td>
+      <td style="padding:6px 8px;font-size:11px;color:#5a6577;white-space:nowrap;">${_escapeHtml(d.product || '-')}</td>
       <td style="padding:6px 8px;font-size:11px;text-align:right;">${ltStr}</td>
       <td style="padding:6px 8px;font-size:11px;color:#5a6577;text-align:center;white-space:nowrap;">${apoStr}</td>
       <td style="padding:6px 8px;font-size:11px;color:#5a6577;text-align:center;white-space:nowrap;">${appStr}</td>
@@ -13547,11 +13640,11 @@ function renderIsCalendar() {
     const s = String(stage || '').trim();
     if (!s) return '';
     if (s.indexOf('失注') === 0 || s === 'チャーン') {
-      return `<span class="rounded px-1 text-[9px] font-bold" style="background:#fee2e2;color:#991b1b" title="${s}">${s.length > 6 ? s.slice(0, 6) + '…' : s}</span>`;
+      return `<span class="rounded px-1 text-[9px] font-bold" style="background:#fee2e2;color:#991b1b" title="${_escapeHtml(s)}">${_escapeHtml(s.length > 6 ? s.slice(0, 6) + '…' : s)}</span>`;
     }
     const sc = { 'E':{bg:'#eaf3fe',text:'#0a5bd3'}, 'D':{bg:'#d2e6fd',text:'#0b4196'}, 'C':{bg:'#d1fae5',text:'#065f46'}, 'C+':{bg:'#a7f3d0',text:'#047857'}, 'B':{bg:'#fef3c7',text:'#92400e'}, 'A':{bg:'#fed7aa',text:'#c2410c'}, 'S':{bg:'#fde68a',text:'#854d0e'} };
     const col = sc[s] || { bg:'#eef1f6', text:'#5a6577' };
-    return `<span class="rounded px-1 text-[9px] font-bold" style="background:${col.bg};color:${col.text}">${s}</span>`;
+    return `<span class="rounded px-1 text-[9px] font-bold" style="background:${col.bg};color:${col.text}">${_escapeHtml(s)}</span>`;
   }
   function isLostStage(stage) {
     const s = String(stage || '').trim();
@@ -13577,21 +13670,21 @@ function renderIsCalendar() {
     const productHint = d.product ? ` / 検討領域:${d.product}` : '';
     let simBadge;
     if (sims.length > 0) {
-      simBadge = `<button onclick="event.stopPropagation();openSimilarModal('${encodeURIComponent(d.company||'')}','${encodeURIComponent(d.industry||'')}','${encodeURIComponent(d.product||'')}')" class="rounded-full px-1 hover:opacity-80" style="background:#fde68a;color:#92400e;font-weight:600;cursor:pointer" title="類似企業を見る (業種:${indDisp}${productHint})">類似${sims.length}</button>`;
+      simBadge = `<button onclick="event.stopPropagation();openSimilarModal('${_encUC(d.company||'')}','${_encUC(d.industry||'')}','${_encUC(d.product||'')}')" class="rounded-full px-1 hover:opacity-80" style="background:#fde68a;color:#92400e;font-weight:600;cursor:pointer" title="類似企業を見る (業種:${_escapeHtml(indDisp + productHint)})">類似${sims.length}</button>`;
     } else if (!indDisp) {
       simBadge = `<span class="rounded-full px-1" style="background:#fef3c7;color:#92400e" title="取引側の業種_baseconnect 列が空です">業種未設定</span>`;
     } else if (masterCount === 0) {
       simBadge = `<span class="rounded-full px-1" style="background:#fee2e2;color:#991b1b;font-weight:600" title="類似企業マスタが0件です">⚠ マスタ0件</span>`;
     } else {
-      simBadge = `<span class="rounded-full px-1" style="background:#eef1f6;color:#a8b2c1" title="業種「${indDisp}」に該当する企業がマスタ${masterCount}件中にありません">該当なし(${indDisp}/マスタ${masterCount})</span>`;
+      simBadge = `<span class="rounded-full px-1" style="background:#eef1f6;color:#a8b2c1" title="業種「${_escapeHtml(indDisp)}」に該当する企業がマスタ${masterCount}件中にありません">該当なし(${_escapeHtml(indDisp)}/マスタ${masterCount})</span>`;
     }
     return `<div class="rounded p-1 mb-0.5 text-[10px] leading-tight" style="background:${cardBg};border-left:3px solid ${cardBorder}">
       <a ${hubUrl} class="font-medium block truncate hover:underline" style="${nameStyle}" title="${_escapeHtml(d.company)}${d.stage ? ' / ステージ:' + d.stage : ''}">${_escapeHtml(d.company || '-')}</a>
       <div class="flex items-center justify-between mt-0.5 flex-wrap gap-0.5">
-        <span class="font-semibold" style="color:${lost ? '#a8b2c1' : c.main}">${creatorShort || '?'}</span>
+        <span class="font-semibold" style="color:${lost ? '#a8b2c1' : c.main}">${_escapeHtml(creatorShort || '?')}</span>
         <div class="flex items-center gap-0.5 flex-wrap">
           ${isStageBadgeHtml(d.stage)}
-          ${d.product ? `<span class="rounded-full px-1" style="background:${pb.bg};color:${pb.text}">${d.product}</span>` : ''}
+          ${d.product ? `<span class="rounded-full px-1" style="background:${pb.bg};color:${pb.text}">${_escapeHtml(d.product)}</span>` : ''}
         </div>
       </div>
       <div class="mt-0.5">${simBadge}</div>
@@ -13672,7 +13765,7 @@ function renderIsCalendar() {
           <a ${hubUrl} class="font-medium block truncate hover:underline" style="color:#28303d" title="${_escapeHtml(d.company)}">${_escapeHtml(d.company || '-')}</a>
           <div class="flex items-center gap-1 mt-0.5">
             <span class="font-semibold" style="color:${c.main}">${creatorShort || '?'}</span>
-            ${d.product ? `<span class="rounded-full px-1" style="background:${pb.bg};color:${pb.text}">${d.product}</span>` : ''}
+            ${d.product ? `<span class="rounded-full px-1" style="background:${pb.bg};color:${pb.text}">${_escapeHtml(d.product)}</span>` : ''}
           </div>
         </div>`;
       }).join('');
@@ -13947,11 +14040,11 @@ function renderSnapshots() {
     return `
     <tr class="border-b hover:bg-slate-50 ${isViewing ? 'bg-amber-50' : ''} ${isSelected ? 'bg-sky-50' : ''}">
       <td class="px-2 py-1.5 text-center">
-        <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSnapSelect('${p.id}', event)"
+        <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSnapSelect('${_escJsAttr(p.id)}', event)"
           class="w-3.5 h-3.5 cursor-pointer accent-sky-600" title="比較対象に追加（Shift+クリックで範囲選択）">
       </td>
       <td class="px-2 py-1.5">
-        <button onclick="viewSnapshot('${p.id}')" class="text-blue-600 hover:underline font-medium text-xs text-left" title="クリックでこの時点のデータを表示（保存日時: ${p.dateStr}）">${String(p.dateStr || '').split('T')[0]}</button>
+        <button onclick="viewSnapshot('${_escJsAttr(p.id)}')" class="text-blue-600 hover:underline font-medium text-xs text-left" title="クリックでこの時点のデータを表示（保存日時: ${_escapeHtml(p.dateStr)}）">${_escapeHtml(String(p.dateStr || '').split('T')[0])}</button>
         ${isViewing ? '<span class="ml-1 text-amber-600 text-xs font-bold">👁 閲覧中</span>' : ''}
         ${isSelected ? '<span class="ml-1 text-sky-700 text-xs font-bold">✓ 比較対象</span>' : ''}
       </td>
@@ -14163,7 +14256,7 @@ function showCompareModal(snaps) {
       if (!p) {
         badge = `<span class="text-[10px] text-slate-300">-</span>`;
       } else if (p.stage === '失注') {
-        badge = `<span class="text-[10px] font-bold px-1 rounded" style="color:#dc2626;background:#fef2f2">${p.lostLabel||'失注'}</span>`;
+        badge = `<span class="text-[10px] font-bold px-1 rounded" style="color:#dc2626;background:#fef2f2">${_escapeHtml(p.lostLabel||'失注')}</span>`;
       } else {
         badge = `<b class="${STAGE_CLS[p.stage]||''} text-[11px] font-bold">${p.stage}</b>`;
       }
@@ -14214,7 +14307,7 @@ function showCompareModal(snaps) {
       <div class="flex items-center gap-0.5 shrink-0">${trajectoryBadges(traj)}</div>
       <a ${hub} class="flex-1 truncate font-medium hover:underline" style="color:#28303d" title="${_escapeHtml(d.company||'')}">${_escapeHtml(d.company||'?')}</a>
       ${dateChangeHtml}
-      <span class="text-[10px] font-semibold shrink-0 px-1.5 py-0.5 rounded-full" style="background:${mColor}20;color:${mColor}">${nameShort}</span>
+      <span class="text-[10px] font-semibold shrink-0 px-1.5 py-0.5 rounded-full" style="background:${mColor}20;color:${mColor}">${_escapeHtml(nameShort)}</span>
     </div>`;
   }
 
