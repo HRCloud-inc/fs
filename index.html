@@ -2729,10 +2729,17 @@ async function savePassword() {
   alert('✅ パスワードを設定しました');
 }
 
-function requirePassword(callback) {
+async function requirePassword(callback) {
   if (!getStoredPassword()) {
-    if (confirm('削除パスワードが未設定です。今すぐ設定しますか？')) openPassSetupModal();
-    return;
+    // ★ 2026-11-11 修正: サーバー（GAS）に削除パスワードが設定済みなら、照合はサーバーで行うので、
+    //   このブラウザでのパスワード設定は不要。そのまま入力画面へ進む。
+    //   サーバー未設定（または確認できない）のときは、これまでどおりこのブラウザでの設定を案内する。
+    let serverConfigured = false;
+    try { serverConfigured = !!(await _verifyDeletePassOnServer('')).configured; } catch (e) {}
+    if (!serverConfigured) {
+      if (confirm('削除パスワードが未設定です。今すぐ設定しますか？')) openPassSetupModal();
+      return;
+    }
   }
   pendingDeleteCallback = callback;
   document.getElementById('passInput').value = '';
@@ -3152,9 +3159,28 @@ function unpackSnapshotsV2(v2) {
 // 本体レスポンス同梱（旧GAS）／後追い取得（v4）のどちらからも呼ばれる。
 async function applyGasSnapshots(gasSnaps) {
   gasSnaps = gasSnaps || [];
-  await migrateLocalSnapshotsToGas(gasSnaps);
+  // ★ 2026-11-11 修正（削除したスナップショットが復活する件）:
+  //   これまでは「サーバーの返事に無い＝まだ送っていない」とみなして、手元のスナップショットを送り直していた
+  //   （migrateLocalSnapshotsToGas）。そのため、誰かが削除しても、開いたままの別の画面が5分以内に送り直して復活させていた。
+  //   また、サーバーは60日より前の分を週1件しか返さないので、古い分を5分ごとに書き直し続けていた。
+  //   → 送り直しをやめる。サーバーにある分が正。
   const gasIds = new Set(gasSnaps.map(s => s.id));
-  const localOnly = snapshots.filter(s => !gasIds.has(s.id));
+  // 同じ日のスナップショットのIDをすべて控える（削除のとき、同じ日の分をまとめて消すため）
+  _snapDayIds = {};
+  gasSnaps.forEach(s => { const k = _snapDayKey(s); (_snapDayIds[k] = _snapDayIds[k] || []).push(s.id); });
+  // 手元にしか無い分は、次のどちらかだけ残す:
+  //   (a) この画面で保存した直後（10分以内）で、まだサーバーの返事に載っていないもの
+  //   (b) 58日より前のもの（サーバーが毎日分を返さない範囲なので、消されたかどうか判断できない＝従来どおり残す）
+  //   直近58日以内なのにサーバーに無いもの＝他の人が削除したもの／保存に失敗したもの → 表示から外す
+  //   ただし、サーバーの返事が空のとき（障害の可能性）と、日付が読めないものは、従来どおりすべて残す（手元の控えを失わないため）
+  const _now = Date.now(), _old = _now - 58 * 86400000;
+  const localOnly = snapshots.filter(s => {
+    if (gasIds.has(s.id)) return false;
+    if (gasSnaps.length === 0) return true;
+    if (_snapPendingAt[s.id] && _now - _snapPendingAt[s.id] < 10 * 60 * 1000) return true;
+    const t = _snapTime(s);
+    return t === 0 || t < _old;
+  });
   snapshots = [...gasSnaps, ...localOnly]
     .sort((a, b) => new Date(a.id) - new Date(b.id));
   snapshots = dedupeSnapshotsByDay(snapshots); // 同日重複（過去行・サーバー/フロント混在）を1件に集約
@@ -8970,7 +8996,7 @@ function openWinRatesModal() {
   renderTimingMonitor();
   try { renderHzMonitor(); } catch (e) { console.error('renderHzMonitor error:', e); }   // ★ 2026-10-02 新方式
   const eEl = document.getElementById('wr-e-rate');
-  if (eEl) eEl.value = Math.round(eWinRate * 100);
+  if (eEl) eEl.value = Math.round(eWinRate * 1000) / 10;   // ★ 2026-11-11 修正: 小数第1位まで表示（入力欄は0.1刻み）
   document.getElementById('winRatesModal').classList.remove('hidden');
 }
 function closeWinRatesModal() {
@@ -9016,7 +9042,7 @@ function renderWinRatesTable() {
   STAGE_LIST_WIN.forEach(stage => {
     html += `<tr><td class="px-3 py-2 border border-slate-200 font-semibold whitespace-nowrap">${stageDescs[stage]||stage}</td>`;
     cols.forEach(prod => {
-      const cur = Math.round(getWinRate(stage, prod === 'default' ? null : prod) * 100);
+      const cur = Math.round(getWinRate(stage, prod === 'default' ? null : prod) * 1000) / 10;   // ★ 2026-11-11 修正: 小数第1位まで表示
       const hasCustom = customWinRates[stage] && customWinRates[stage][prod] !== undefined;
       html += `<td class="px-2 py-1 border border-slate-200">
         <div class="flex items-center gap-1 justify-center">
@@ -9065,6 +9091,7 @@ function resetWinRates() {
   gasPost('saveWinRates', { winRates: { customWinRates: {}, eWinRate: 0.10 } }).then(r => { if (r && r.ok) { try { fetchFromSheets(true, true); } catch (e) {} } });
   renderWinRatesTable();
   renderAccuracyMonitor();
+  render();   // ★ 2026-11-11 修正: 画面の着地予想も既定値で描き直す（これまでは古い数字のままだった）
 }
 
 // ============================================================
@@ -13845,7 +13872,11 @@ function loadSnapshots() {
   migrateSnapshotNames();
 }
 
+// ★ 2026-11-11 追加: 同じ日のスナップショットのID一覧（サーバーの返事から作る）／この画面で保存した時刻
+let _snapDayIds = {};
+const _snapPendingAt = {};
 // localStorage のスナップショットを GAS に移行（初回のみ）
+// ★ 2026-11-11: 呼び出しをやめた（削除したものを復活させていたため）。関数は残してある。
 async function migrateLocalSnapshotsToGas(gasSnapshots) {
   const gasIds = new Set((gasSnapshots || []).map(s => s.id));
   const localOnly = snapshots.filter(s => !gasIds.has(s.id));
@@ -13869,6 +13900,7 @@ async function saveSnapshot(opt) {
   const dateStr = `${now.getFullYear()}/${String(now.getMonth()+1).padStart(2,'0')}/${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
   const snap = { id: ts, dateStr, label: dateStr, pipeline: pipeline.slice(), lostDeals: lostDeals.slice() };
   // ローカルに即時反映
+  _snapPendingAt[snap.id] = Date.now();   // ★ 2026-11-11: 保存した直後の分として控える
   snapshots.push(snap);
   persistSnapshots(); // localStorageにバックアップ
   renderSnapshots();
@@ -13925,8 +13957,12 @@ function deleteSnapshot(id) {
     persistSnapshots(); // localStorageにも反映
     render();
     // ★ 2026-08-12(B2): サーバー側でも再照合させるためハッシュを添付
-    const res = await gasPost('deleteSnapshot', { id, passHash: _deletePassHash });
-    if (!res.ok) _restoreSnapshots(removed);
+    // ★ 2026-11-11 修正: サーバーには同じ日に複数ある（画面からの保存＋23時の自動保存）。同じ日の分をすべて消す
+    const dayIds = removed.length ? (_snapDayIds[_snapDayKey(removed[0])] || []) : [];
+    const ids = [...new Set([id, ...dayIds])];
+    let failed = false;
+    for (const x of ids) { const res = await gasPost('deleteSnapshot', { id: x, passHash: _deletePassHash }); if (!res.ok) failed = true; }
+    if (failed) _restoreSnapshots(removed);
   });
 }
 function clearAllSnapshots() {
@@ -13934,7 +13970,8 @@ function clearAllSnapshots() {
   requirePassword(async () => {
     if (!confirm(`${snapshots.length}件のスナップショットを全て削除しますか？`)) return;
     const all = snapshots.slice();
-    const ids = snapshots.map(s => s.id);
+    // ★ 2026-11-11 修正: 同じ日にサーバーへ複数保存されている分も含めて消す
+    const ids = [...new Set(snapshots.flatMap(s => [s.id, ...(_snapDayIds[_snapDayKey(s)] || [])]))];
     snapshots = []; snapshotView = null;
     persistSnapshots(); // localStorageからも削除
     render();
@@ -13943,7 +13980,7 @@ function clearAllSnapshots() {
       const res = await gasPost('deleteSnapshot', { id, passHash: _deletePassHash });
       if (!res.ok) failed.push(id);
     }
-    if (failed.length) _restoreSnapshots(all.filter(s => failed.includes(s.id)));
+    if (failed.length) _restoreSnapshots(all.filter(s => failed.includes(s.id) || (_snapDayIds[_snapDayKey(s)] || []).some(x => failed.includes(x))));
   });
 }
 
