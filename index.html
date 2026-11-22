@@ -1231,8 +1231,8 @@ document.addEventListener('DOMContentLoaded',function(){var ic=document.getEleme
             <input type="checkbox" id="eCalReupWarnOnly" onchange="eReupOnlyWarn=this.checked;renderECalReup()" style="accent-color:#dc2626">
             <i class="ti ti-alert-triangle"></i> 戻し忘れのみ
           </label>
-          <!-- ★ 2026-08-10 追加: 未商談化理由=注力 のみ表示 -->
-          <button id="eCalReupFocusBtn" onclick="toggleEReupOnlyFocus()" class="px-2 py-1 text-xs font-semibold rounded border transition-colors" title="未商談化理由が「注力」の案件だけを表示">
+          <!-- ★ 2026-08-10 追加: 注力 のみ表示（★ 2026-11-22: 判定を IS追客区分 へ移行） -->
+          <button id="eCalReupFocusBtn" onclick="toggleEReupOnlyFocus()" class="px-2 py-1 text-xs font-semibold rounded border transition-colors" title="IS追客区分が「注力」の案件だけを表示">
             <i class="ti ti-flame"></i> 注力のみ
           </button>
           <!-- ★ 2026-08-12 追加: 再失注したのに次の再アップ時期が未入力＝誰も追えない案件だけを表示 -->
@@ -1243,7 +1243,7 @@ document.addEventListener('DOMContentLoaded',function(){var ic=document.getEleme
         </div>
       </div>
       <!-- メンバー別件数サマリ（カードクリックで複数選択フィルタ） -->
-      <p class="text-[10px] text-slate-400 mb-1">担当者カードをクリックで一覧を絞り込み（複数選択可・再クリックで解除）／「注力」カードは未商談化理由が注力の案件のみに絞り込み</p>
+      <p class="text-[10px] text-slate-400 mb-1">担当者カードをクリックで一覧を絞り込み（複数選択可・再クリックで解除）／「注力」カードはIS追客区分が注力の案件のみに絞り込み</p>
       <div id="eCalReupSummary" class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4"></div>
       <!-- 時期別 案件一覧 -->
       <div id="eCalReupBody"></div>
@@ -3848,6 +3848,8 @@ function normalizeRow(row, hubspotId = null) {
   const chuStatus = String(find('【中途】現状の管理方法','中途現状','中途の管理方法') || '').trim();
   const productRaw = String(find('商品','プロダクト','種別','タイプ','product') || '').trim();
   const mishoshoReason = String(find('未商談化理由','field8__c') || '').trim();
+  // ★ 2026-11-22 追加: IS追客区分（HubSpot istsuikyakukubun：注力／通常ナーチャ／条件付き再アップ）。注力の判定はこちらへ移行
+  const isFollow = String(find('IS追客区分','istsuikyakukubun') || '').trim();
   const lostReason1 = String(find('失注理由1','field6__c') || '').trim();
   const lostReason = lostReason1 || mishoshoReason;
   const replaceNew  = String(find('リプレイス（新卒）') || '').trim();
@@ -3926,7 +3928,7 @@ function normalizeRow(row, hubspotId = null) {
   const _pushReup = () => {
     if (reupTiming && company) {
       reupDeals.push({ company, companyId, name: name || recordCreator || '不明', reupTiming, reupDate,
-                       prevStage: stageRaw || '不明', lostReason, mishoshoReason, nyusaki, hubspotId: hubspotId || null,
+                       prevStage: stageRaw || '不明', lostReason, mishoshoReason, isFollow, nyusaki, hubspotId: hubspotId || null,
                        closeMonth: month, closeDay, apoCreatedDate });
     }
   };
@@ -3970,7 +3972,7 @@ function normalizeRow(row, hubspotId = null) {
     if (lostAmt === 0 && lostProduct) { lostAmt = PRODUCT_ESTIMATES[lostProduct] || DEFAULT_ESTIMATE; lostEst = true; }
     else if (lostAmt === 0) { lostAmt = DEFAULT_ESTIMATE; lostEst = true; }
     return { company, companyId, name, month, closeDay, amount: lostAmt, estimated: lostEst, stage: '失注',
-             lostLabel, lostReason, mishoshoReason, hubspotId: hubspotId||null,
+             lostLabel, lostReason, mishoshoReason, isFollow, hubspotId: hubspotId||null,
              product: lostProduct, shinStatus, chuStatus, replaceNew, replaceChu, nyusaki,
              leadSource: leadSourceRaw, industry: industryRaw,
              reupload: reuploadFlag, reupTiming, reupDate, stageRaw, leadCreatedDate,
@@ -4037,6 +4039,7 @@ function normalizeRow(row, hubspotId = null) {
            entN: entNRaw, entC: entCRaw, preCampaign: preCampRaw,
            amount, stage, product, estimated, hubspotId, lostReason,
            mishoshoReason,  // ★追加: 未商談化理由（実施数フィルタ用）
+           isFollow,        // ★ 2026-11-22 追加: IS追客区分
            shinStatus, chuStatus, replaceNew, replaceChu, nyusaki,
            leadSource: leadSourceRaw, industry: industryRaw,
            reupload: reuploadFlag, reupTiming, reupDate, stageRaw, leadCreatedDate,
@@ -4875,7 +4878,7 @@ function _isListStageData() {
   const coKey = d => String(d.companyId || '').trim() || _reupNormCompanyKey(d.company);
   const fm = new Map();
   [...(pipeline || []), ...(lostDeals || []), ...(reupDeals || [])].forEach(d => {
-    if (String(d.mishoshoReason || '').trim() !== '注力') return;
+    if (!_isReupFocus(d)) return;  // ★ 2026-11-22: IS追客区分「注力」（旧：未商談化理由「注力」も含む）
     const k = coKey(d); if (!k) return;
     const o = fm.get(k); if (!o || String(d.reupTiming || '') > String(o.reupTiming || '')) fm.set(k, d);
   });
@@ -4915,7 +4918,7 @@ function renderIsListStageCards() {
     const list = data[c.key] || [];
     let sub = '';
     if (c.src === 'perc') sub = `リサイクル ${list.filter(r => String(r.recycle).toLowerCase() === 'true').length.toLocaleString()}`;
-    else if (c.src === 'focus') sub = '未商談化理由「注力」';
+    else if (c.src === 'focus') sub = 'IS追客区分「注力」';
     else sub = `今月 ${list.filter(r => r._timing === ym).length.toLocaleString()}・過ぎた ${list.filter(r => r._timing && r._timing < ym).length.toLocaleString()}`;
     return `<button type="button" class="isls-card" onclick="openIsListStageModal('${c.key}')" title="クリックで企業一覧">
       <span class="isls-bar" style="background:${c.color}"></span><i class="ti ti-chevron-right isls-go"></i>
@@ -11861,6 +11864,7 @@ function _collectReupRows() {
                 name: d.name || '不明', reupTiming: d.reupTiming, reupDate: d.reupDate || null,
                 prevStage, isLost, lostReason: _splitLostReason(d),
                 mishoshoReason: String(d.mishoshoReason || '').trim(),
+                isFollow: String(d.isFollow || '').trim(),  // ★ 2026-11-22 追加
                 nyusaki: d.nyusaki || '', hubspotId: d.hubspotId || null }),
                 _closeBoundary(d.month, d.closeDay)));
   });
@@ -11869,15 +11873,23 @@ function _collectReupRows() {
                 name: d.name || '不明', reupTiming: d.reupTiming, reupDate: d.reupDate || null,
                 prevStage: d.prevStage || '不明', isLost: String(d.prevStage||'').includes('失注') || String(d.prevStage||'').includes('チャーン'),
                 lostReason: _splitLostReason(d), mishoshoReason: String(d.mishoshoReason || '').trim(),
+                isFollow: String(d.isFollow || '').trim(),  // ★ 2026-11-22 追加
                 nyusaki: d.nyusaki || '', hubspotId: d.hubspotId || null }),
                 _closeBoundary(d.closeMonth, d.closeDay)));
   });
   return rows;
 }
 
-// ★ 2026-08-10 追加: 「注力」判定（HubSpot 未商談化理由 field8__c の選択肢）
+// ★ 2026-08-10 追加: 「注力」判定
+// ★ 2026-11-22 変更: 注力は HubSpot の IS追客区分（istsuikyakukubun）で付ける運用に変わった。
+//    IS追客区分＝注力 を正とし、移行前の 未商談化理由（field8__c）＝【旧】注力 も注力として扱う
+//    （旧の注力177件は全件 IS追客区分にも移行済み＝2026-11-22 確認。GAS 貼り替え前でも件数がずれないようにするため）
 const REUP_FOCUS_VALUE = '注力';
-function _isReupFocus(row) { return String(row && row.mishoshoReason || '').trim() === REUP_FOCUS_VALUE; }
+function _isReupFocus(row) {
+  if (!row) return false;
+  return String(row.isFollow || '').trim() === REUP_FOCUS_VALUE
+      || String(row.mishoshoReason || '').trim() === REUP_FOCUS_VALUE;
+}
 
 // 「注力のみ」トグル
 function toggleEReupOnlyFocus() {
@@ -12052,7 +12064,7 @@ function renderECalReup() {
   }
 
   if (rows.length === 0) {
-    body.innerHTML = `<div class="text-center py-8 text-slate-400 text-sm">${eReupOnlyDead ? '再失注して次の再アップ時期が未入力の案件はありません' : eReupOnlyFocus ? '未商談化理由が「注力」の再アップ案件はありません' : '再アップ時期が入力されている案件はありません'}</div>`;
+    body.innerHTML = `<div class="text-center py-8 text-slate-400 text-sm">${eReupOnlyDead ? '再失注して次の再アップ時期が未入力の案件はありません' : eReupOnlyFocus ? 'IS追客区分が「注力」の再アップ案件はありません' : '再アップ時期が入力されている案件はありません'}</div>`;
     return;
   }
 
@@ -12087,14 +12099,26 @@ function renderECalReup() {
     }
     return `<span class="font-semibold whitespace-nowrap" style="color:${color}">${esc(r.nextCall)}</span>`;
   };
-  // ★ 2026-08-10 追加: 未商談化理由セル（「注力」は独自色バッジで強調）
+  // ★ 2026-08-10 追加: 未商談化理由セル
+  // ★ 2026-11-22 変更: 注力の強調は IS追客区分セルへ移した。旧の「注力」は（旧）を付けて薄く出す
   const mishoshoCell = (r) => {
     const v = String(r.mishoshoReason || '').trim();
     if (!v) return '<span class="text-slate-300">－</span>';
-    if (_isReupFocus(r)) {
-      return `<span class="px-2 py-0.5 rounded-full text-[11px] font-bold whitespace-nowrap" style="background:#ede9fe;color:#5b21b6" title="未商談化理由: 注力"><i class="ti ti-flame"></i> ${esc(v)}</span>`;
-    }
+    if (v === REUP_FOCUS_VALUE) return `<span class="text-slate-400" title="未商談化理由の【旧】注力（今は IS追客区分 で管理）">（旧）${esc(v)}</span>`;
     return `<span class="text-slate-500">${esc(v)}</span>`;
+  };
+  // ★ 2026-11-22 追加: IS追客区分セル（注力＝紫の炎バッジ／条件付き再アップ＝黄／通常ナーチャ＝灰）
+  //    IS追客区分が空でも旧の未商談化理由が「注力」なら注力として出す（GAS 貼り替え前の移行期間用）
+  const isFollowCell = (r) => {
+    const v = String(r.isFollow || '').trim() || (_isReupFocus(r) ? REUP_FOCUS_VALUE : '');
+    if (!v) return '<span class="text-slate-300">－</span>';
+    if (v === REUP_FOCUS_VALUE) {
+      return `<span class="px-2 py-0.5 rounded-full text-[11px] font-bold whitespace-nowrap" style="background:#ede9fe;color:#5b21b6" title="IS追客区分: 注力"><i class="ti ti-flame"></i> ${esc(v)}</span>`;
+    }
+    if (v === '条件付き再アップ') {
+      return `<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap" style="background:#fef3c7;color:#92400e" title="IS追客区分: 条件付き再アップ">${esc(v)}</span>`;
+    }
+    return `<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap" style="background:#eef1f6;color:#5a6577" title="IS追客区分: ${esc(v)}">${esc(v)}</span>`;
   };
   // 再アップ判定: won=新取引が受注(S) / success=新取引あり / forgot=所有者戻し忘れ疑い / is=IS保有中
   const judgePill = (r) => {
@@ -12143,6 +12167,7 @@ function renderECalReup() {
         <th class="text-left px-2 py-1.5 font-semibold" style="width:15%">次アクション</th>
         <th class="text-left px-2 py-1.5 font-semibold" style="width:12%">再アップ判定</th>
         <th class="text-left px-2 py-1.5 font-semibold" style="width:9%">前回ステージ</th>
+        <th class="text-left px-2 py-1.5 font-semibold" style="width:9%">IS追客区分</th>
         <th class="text-left px-2 py-1.5 font-semibold" style="width:10%">未商談化理由</th>
         <th class="text-left px-2 py-1.5 font-semibold" style="width:8%">前回失注理由</th>
         <th class="text-left px-2 py-1.5 font-semibold" style="width:6%">導入先</th>
@@ -12158,6 +12183,7 @@ function renderECalReup() {
           <td class="px-2 py-1.5">${actionCell(r)}</td>
           <td class="px-2 py-1.5">${judgePill(r)}</td>
           <td class="px-2 py-1.5">${stagePill(r)}</td>
+          <td class="px-2 py-1.5">${isFollowCell(r)}</td>
           <td class="px-2 py-1.5">${mishoshoCell(r)}</td>
           <td class="px-2 py-1.5 text-slate-500">${esc(r.lostReason) || '<span class="text-slate-300">－</span>'}</td>
           <td class="px-2 py-1.5 text-slate-600">${esc(r.nyusaki) || '<span class="text-slate-300">－</span>'}</td>
