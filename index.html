@@ -3850,7 +3850,12 @@ function normalizeRow(row, hubspotId = null) {
   const mishoshoReason = String(find('未商談化理由','field8__c') || '').trim();
   // ★ 2026-11-22 追加: IS追客区分（HubSpot istsuikyakukubun：注力／通常ナーチャ／条件付き再アップ）。注力の判定はこちらへ移行
   const isFollow = String(find('IS追客区分','istsuikyakukubun') || '').trim();
-  const lostReason1 = String(find('失注理由1','field6__c') || '').trim();
+  // ★ 2026-11-24 変更: 新しい失注理由2項目（失注理由（競合）／失注理由（ATS利用なし）・2026/10〜必須）に本来の理由があれば優先。
+  //    「受注のため入力不要」「他の失注理由により入力不要」は理由ではないので使わない。どちらも無ければ従来どおり 失注理由1
+  const _realLostReason = (v) => { const s = String(v || '').trim(); return (s && !s.includes('入力不要')) ? s : ''; };
+  const lostCompete = String(find('失注理由（競合）','shitsuchuuriyuukyougou') || '').trim();
+  const lostNoAts   = String(find('失注理由（ATS利用なし）','shitsuchuuriyuuatsriyounashi') || '').trim();
+  const lostReason1 = _realLostReason(lostCompete) || _realLostReason(lostNoAts) || String(find('失注理由1','field6__c') || '').trim();
   const lostReason = lostReason1 || mishoshoReason;
   const replaceNew  = String(find('リプレイス（新卒）') || '').trim();
   const replaceChu  = String(find('リプレイス（中途）') || '').trim();
