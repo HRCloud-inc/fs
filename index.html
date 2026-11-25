@@ -12715,17 +12715,18 @@ function renderIsMemberTable() {
 
   // 個別行: 白背景 + 行間 点線
   const memberStatsMap = {};
-  let memberRowsHtml = rows.map(r => {
+  function memberRow(r) {
     const s = statsFor(r.name);
     memberStatsMap[r.name] = s;
     return `<tr style="background:#ffffff;border-bottom:1px dashed #e2e7ef">
       <td class="px-2 py-1 text-left font-medium sticky left-0 z-10" style="background:#ffffff">${_escapeHtml(r.name)}</td>
       ${makeCells(s, r.name, r.name)}
     </tr>`;
-  }).join('');
+  }
 
-  // 集計行（複数名の合計）
-  function aggregateRow(label, names, bgColor) {
+  // ★ 2026-11-25 FSの状況テーブルと同じ形に変更：ユニットごとに「人の行 → ユニット小計」、一番下に「IS合計」
+  //   小計はユニット名簿で足す（表示していない退職・異動者の分も含む）。数字の出し方は従来と同じ
+  function aggregateRow(label, names, style) {
     const isTotal = label === '合計';
     let sum;
     if (isTotal) {
@@ -12752,24 +12753,39 @@ function renderIsMemberTable() {
       });
     }
     const memberArg = isTotal ? '__ALL__' : ('GROUP:' + names.join(','));
-    return `<tr style="background:${bgColor};color:white">
-      <td class="px-2 py-1.5 text-left font-bold sticky left-0 z-10 text-white" style="background:${bgColor}">${label}</td>
-      ${makeCells(sum, label, memberArg, true)}
+    if (isTotal) {
+      // FS合計と同じ見た目（薄い灰色＋上に太線）
+      return `<tr class="is-tot-row" style="background:#eef1f6">
+      <td class="px-2 py-1.5 text-left sticky left-0 z-10" style="background:#eef1f6;color:#062a52;font-weight:800">IS合計</td>
+      ${makeCells(sum, label, memberArg, false)}
+    </tr>`;
+    }
+    // ユニット小計（FSの小計と同じ見た目：薄い水色＋青字＋「小計」）
+    return `<tr style="background:#f3f8fe;border-bottom:1px solid #cdd5e0">
+      <td class="px-2 py-1 text-left sticky left-0 z-10" style="background:#f3f8fe;color:#0a5bd3;font-weight:600">${_escapeHtml(label)}<span style="font-size:9px;color:#7c8798;font-weight:400;margin-left:3px">小計</span></td>
+      ${makeCells(sum, label, memberArg, false)}
     </tr>`;
   }
 
-  const allNames = rows.map(r => r.name);
-  // 合計行は「担当者/月間」と同じ #2575f0 / ユニット行も同色で統一
-  const FOOTER_BG = '#2575f0';
-  let footerHtml = aggregateRow('合計', allNames, FOOTER_BG);
-
+  let bodyHtml = '';
   if (currentFY === 'FY2026') {
-    Object.entries(getIsUnits(months)).forEach(([name, members]) => {
-      footerHtml += aggregateRow(name, members, FOOTER_BG);
+    const units = getIsUnits(months);
+    const placed = new Set();
+    Object.entries(units).forEach(([name, members]) => {
+      const set = new Set(members);
+      rows.filter(r => set.has(r.name) && !placed.has(r.name)).forEach(r => { placed.add(r.name); bodyHtml += memberRow(r); });
+      bodyHtml += aggregateRow(name, members);
     });
+    // どのユニットにも入っていない人（例：4〜6月構成の若本さん）は最後に並べる（小計なし）
+    rows.filter(r => !placed.has(r.name)).forEach(r => { bodyHtml += memberRow(r); });
+  } else {
+    bodyHtml = rows.map(memberRow).join('');
   }
+  bodyHtml += aggregateRow('合計', rows.map(r => r.name));
 
-  tbody.innerHTML = memberRowsHtml + footerHtml;
+  tbody.innerHTML = bodyHtml;
+  // IS合計の上に太線（FS合計と同じ）
+  tbody.querySelectorAll('tr.is-tot-row > td').forEach(td => { td.style.borderTop = '2px solid #3d4757'; });
 }
 
 // ============================================================
