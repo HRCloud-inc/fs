@@ -1497,6 +1497,19 @@ document.addEventListener('DOMContentLoaded',function(){var ic=document.getEleme
         .isls-n small{font-size:11px;color:#5b6b7f;font-weight:600;margin-left:2px}
         .isls-s{font-size:10.5px;color:#5b6b7f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
         html.dark .isls-card{background:#0a2f59;border-color:#173f6b}html.dark .isls-n{color:#e6eef7}
+        /* ★ 2026-11-25 架電タスクのカード（5枚）と、クリックで開くメンバー別の一覧 */
+        .isls-grid5{grid-template-columns:repeat(5,minmax(0,1fr))}
+        @media (max-width:900px){.isls-grid5{grid-template-columns:repeat(3,minmax(0,1fr))}}
+        .isct-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:10px 0 6px}
+        .isct-t{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:800;color:#0f1f33}
+        .isct-n{font-size:10.5px;color:#7c8798}
+        .isls-card.isct-on{border-color:#2575f0;box-shadow:0 0 0 2px rgba(37,117,240,.18)}
+        .isls-card:disabled{cursor:default;opacity:.75}.isls-card:disabled:hover{transform:none;box-shadow:none}
+        .isct-x{margin-left:auto;border:0;background:transparent;color:#7c8798;cursor:pointer;font-size:14px;line-height:1;padding:2px 5px;border-radius:6px}
+        .isct-x:hover{background:#e3eaf2}
+        .isct-bar{height:8px;border-radius:99px;min-width:2px}
+        .isct-num{text-align:right;font-weight:800;color:#0f1f33;font-variant-numeric:tabular-nums}.isct-num small{font-size:10px;color:#5b6b7f;font-weight:600;margin-left:2px}
+        html.dark .isct-t{color:#e6eef7}html.dark .isct-num{color:#e6eef7}html.dark .isct-x:hover{background:#123b66}
         /* 一覧（B案の表と同じ見た目） */
         .isjb-grp{margin-top:8px;border:1px solid #e3eaf2;border-radius:12px;overflow:hidden}
         .isjb-gh{display:flex;align-items:center;gap:7px;padding:6px 10px;background:#f5f8fb;font-weight:800;font-size:12px;color:#0f1f33}
@@ -1516,6 +1529,10 @@ document.addEventListener('DOMContentLoaded',function(){var ic=document.getEleme
         html.dark .isjb-t td{color:#c9d6e5;border-color:#123b66}html.dark .isjb-t th{border-color:#173f6b;color:#9fb2c8}html.dark .isjb-lo{background:#062a52}
       </style>
       <div id="isListStageCards" class="isls-grid"></div>
+      <!-- ★ 2026-11-25 架電タスクのカード5枚（今日／昨日／明日以降／昨日より前／タスクなし）。クリックで下にメンバー別の数字 -->
+      <div id="isCallTaskHead" class="isct-head"></div>
+      <div id="isCallTaskCards" class="isls-grid isls-grid5"></div>
+      <div id="isCallTaskPanel"></div>
       <!-- 3段階アコーディオン: 担当者 → 担当者名(保有数) → 商談化転換元バー -->
       <!-- ★ 2026-10-13 未使用のため「担当者」アコーディオンを非表示（本人指定） -->
       <div id="isCombinedBody" style="display:none"></div>
@@ -3687,6 +3704,9 @@ async function fetchFromSheets(silent = false, useFresh = !silent) {
             isListYes = _isYes.map(_normalizeListRow);
             isListNo  = _isNo.map(_normalizeListRow);
             isTransitions = isJson.transitions || []; // ★ 2026-06-15 追加
+            // ★ 2026-11-25 架電タスク：GASが対応済み（callTasksReady）のときだけ、別便で取りに行く（未対応のGASに送ると重い本体が返るため）
+            if (isJson.callTasksReady) { _fetchIsCallTasks(); }
+            else if (isCallTasksState !== 'ok') { isCallTasksState = 'nogas'; }
             // ★ データ更新時に「本日の保有リストスナップショット」をlocalStorageへ自動保存（前日比較用）
             try { _saveIsListSnapshot(); } catch(e) { console.warn('[IS snap save]', e); }
             const isUpdatedAt = isJson.updatedAt ? new Date(isJson.updatedAt).toLocaleString('ja-JP') : '';
@@ -4870,6 +4890,7 @@ function renderIsListCard() {
   setText('is-list-yes',   yesUnique.length);
   setText('is-list-no',    noUnique.length);
   try { renderIsListStageCards(); } catch (e) { console.error('renderIsListStageCards error:', e); }
+  try { renderIsCallTaskCards(); } catch (e) { console.error('renderIsCallTaskCards error:', e); }
 }
 
 // ============================================================
@@ -5006,6 +5027,176 @@ function openIsListStageModal(key) {
   modal.classList.add('flex');
 }
 
+
+// ============================================================
+// ★ 2026-11-25 IS保有リスト：架電タスクのカード5枚（だいけんさん指定）
+//   データ＝IS用GASの ?only=calltasks（HubSpotのタスクのうち、件名に「架電」を含む・未完了のもの。1時間おきに更新）
+//   単位＝会社（IS保有リストと同じまとめ方。会社に紐づかないコンタクトは1人を1社）。5枚を足すとIS保有リストの会社数になる
+//   1社に架電タスクが複数あるときは、期限が一番早いタスクで分類する
+//   今日／昨日は営業日で数える（土日・国民の祝日・年末年始12/29〜1/3は営業日ではない。月曜の「昨日」＝前の金曜）
+//     今日が期限＝期限が今日／昨日が期限＝期限が前の営業日／明日以降＝期限が今日より後（期限なしもここ）／
+//     昨日より前＝それ以外の過去（前の営業日より前、または間の休日）／タスクなし＝架電タスクが1件もない会社
+//   メンバー別：1〜4枚目＝分類のもとになったタスクの担当者／5枚目＝会社の担当者（その会社で担当コンタクトが一番多いIS）
+// ============================================================
+// 国民の祝日（振替休日・国民の休日を含む）。2028年分以降は年が近づいたら足す
+const ISCT_HOLIDAYS = new Set([
+  '2026/01/01','2026/01/12','2026/02/11','2026/02/23','2026/03/20','2026/04/29','2026/05/03','2026/05/04','2026/05/05','2026/05/06',
+  '2026/07/20','2026/08/11','2026/09/21','2026/09/22','2026/09/23','2026/10/12','2026/11/03','2026/11/23',
+  '2027/01/01','2027/01/11','2027/02/11','2027/02/23','2027/03/21','2027/03/22','2027/04/29','2027/05/03','2027/05/04','2027/05/05',
+  '2027/07/19','2027/08/11','2027/09/20','2027/09/23','2027/10/11','2027/11/03','2027/11/23',
+]);
+// 色はダッシュボードの配色（IS保有リストのカード・達成率の色）から
+const ISCT_CARDS = [
+  { key: 'today',  label: '今日が期限', icon: 'ti-phone-call',     color: '#2575f0', text: '#1763d8' },
+  { key: 'prev',   label: '昨日が期限', icon: 'ti-history',        color: '#f59e0b', text: '#b45309' },
+  { key: 'future', label: '明日以降',   icon: 'ti-calendar-event', color: '#0fa6e0', text: '#0b7fb0' },
+  { key: 'older',  label: '昨日より前', icon: 'ti-alert-triangle', color: '#dc2626', text: '#dc2626' },
+  { key: 'none',   label: 'タスクなし', icon: 'ti-phone-off',      color: '#7c8798', text: '#5a6577' },
+];
+let isCallTasks = null;            // 架電タスク（{due, owner, companyId, contactId} の配列）。未取得は null
+let isCallTasksUpdatedAt = '';     // GASがHubSpotから読み込んだ時刻
+let isCallTasksState = 'wait';     // wait=IS本体の読み込み待ち / nogas=GAS未対応 / loading / ok / empty=シートが空 / error
+let _isctOpenKey = null;           // メンバー別を開いているカード
+let _isctCache = null;
+
+function _isctYmd(d) { return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`; }
+function _isctIsBizDay(d) {
+  const w = d.getDay(); if (w === 0 || w === 6) return false;
+  const m = d.getMonth() + 1, dd = d.getDate();
+  if ((m === 12 && dd >= 29) || (m === 1 && dd <= 3)) return false;   // 年末年始
+  return !ISCT_HOLIDAYS.has(_isctYmd(d));
+}
+function _isctPrevBizDay(d) { const x = new Date(d); do { x.setDate(x.getDate() - 1); } while (!_isctIsBizDay(x)); return x; }
+function _isctMd(d) { return `${d.getMonth() + 1}/${d.getDate()}（${'日月火水木金土'[d.getDay()]}）`; }
+
+async function _fetchIsCallTasks() {
+  if (!IS_GAS_URL) return;
+  if (isCallTasksState !== 'ok') { isCallTasksState = 'loading'; try { renderIsCallTaskCards(); } catch (e) {} }
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 60000);
+    let json;
+    try {
+      const res = await fetch(IS_GAS_URL + '?token=' + IS_GAS_TOKEN + '&only=calltasks', { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      json = await res.json();
+    } finally { clearTimeout(timer); }
+    if (!json || !json.ok || !json.callTasks) throw new Error((json && json.error) || '架電タスクの応答エラー');
+    isCallTasks = unpackIsRowsV2(json.callTasks);
+    isCallTasksUpdatedAt = json.updatedAt || '';
+    isCallTasksState = isCallTasks.length ? 'ok' : 'empty';
+    _isctCache = null;
+  } catch (e) {
+    console.warn('[架電タスク] 取得失敗:', e);
+    if (isCallTasksState !== 'ok') isCallTasksState = 'error';
+  }
+  try { renderIsCallTaskCards(); } catch (e) { console.error('renderIsCallTaskCards error:', e); }
+}
+
+// 会社ごとに「期限が一番早い架電タスク」を引き当て、5つに分ける
+function _isctData() {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const prev = _isctPrevBizDay(today);
+  const tStr = _isctYmd(today), pStr = _isctYmd(prev);
+  if (_isctCache && _isctCache.yes === isListYes && _isctCache.no === isListNo && _isctCache.tasks === isCallTasks && _isctCache.tStr === tStr) return _isctCache.data;
+  const normNm = s => String(s || '').replace(/[　\s]+/g, ' ').trim().replace(/惠/g, '恵').replace(/﨑/g, '崎').replace(/邊/g, '辺').replace(/邉/g, '辺');
+  // タスクの索引（会社ID別・コンタクトID別に、期限が一番早いもの。期限なしは一番後ろ）
+  const byCo = new Map(), byCt = new Map();
+  const put = (m, k, t) => { if (!k) return; const c = m.get(k); if (!c || t.d < c.d) m.set(k, t); };
+  (isCallTasks || []).forEach(t => {
+    const o = { d: /^\d{4}\/\d{2}\/\d{2}$/.test(String(t.due || '')) ? String(t.due) : '9999/99/99', owner: normNm(t.owner) };
+    put(byCo, String(t.companyId || '').trim(), o);
+    put(byCt, String(t.contactId || '').trim(), o);
+  });
+  // 会社（_dedupRows と同じキー：会社ID → 会社名 → コンタクト）
+  const groups = new Map();
+  [...isListYes, ...isListNo].forEach(r => {
+    const key = r.companyId || r.company || (r.contactId ? 'c:' + r.contactId : '');
+    if (!key) return;
+    let g = groups.get(key);
+    if (!g) { g = { companyId: String(r.companyId || '').trim(), contactIds: [], owners: new Map() }; groups.set(key, g); }
+    if (r.contactId) g.contactIds.push(String(r.contactId));
+    const o = String(r.owner || '').trim();
+    g.owners.set(o, (g.owners.get(o) || 0) + 1);
+  });
+  const out = {};
+  ISCT_CARDS.forEach(c => { out[c.key] = { total: 0, by: new Map() }; });
+  groups.forEach(g => {
+    let best = g.companyId ? (byCo.get(g.companyId) || null) : null;
+    g.contactIds.forEach(id => { const t = byCt.get(id); if (t && (!best || t.d < best.d)) best = t; });
+    let k, who;
+    if (!best) {
+      k = 'none';
+      let top = '', n = -1;
+      g.owners.forEach((v, o) => { if (v > n) { n = v; top = o; } });
+      who = top;
+    } else {
+      k = best.d === tStr ? 'today' : best.d === pStr ? 'prev' : best.d > tStr ? 'future' : 'older';
+      who = best.owner;
+    }
+    const b = out[k];
+    b.total++;
+    const nm = normNm(who) || '（担当者なし）';
+    b.by.set(nm, (b.by.get(nm) || 0) + 1);
+  });
+  const data = { out, today, prev, total: groups.size };
+  _isctCache = { yes: isListYes, no: isListNo, tasks: isCallTasks, tStr, data };
+  return data;
+}
+
+function renderIsCallTaskCards() {
+  const host = document.getElementById('isCallTaskCards'), head = document.getElementById('isCallTaskHead');
+  if (!host) return;
+  let data = null;
+  if (isCallTasksState === 'ok') { try { data = _isctData(); } catch (e) { console.error('架電タスク 集計', e); } }
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const prev = _isctPrevBizDay(today);
+  const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+  const subs = {
+    today:  `${_isctMd(today)}が期限`,
+    prev:   `${_isctMd(prev)}が期限`,
+    future: `${_isctMd(tomorrow)}以降が期限`,
+    older:  `${_isctMd(prev)}より前・期限切れ`,
+    none:   '架電タスクがない会社',
+  };
+  if (head) {
+    const when = isCallTasksUpdatedAt ? new Date(isCallTasksUpdatedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+    const msg = { wait: '読み込み中…', loading: '読み込み中…', nogas: 'データ準備中（GASの更新待ち）', empty: 'データ準備中（架電タスクの初回読み込み待ち）', error: '読み込みに失敗しました' }[isCallTasksState] || '';
+    head.innerHTML = `<span class="isct-t"><i class="ti ti-phone"></i>架電タスク</span>`
+      + `<span class="isct-n">件名に「架電」を含む未完了のタスク・会社単位（1社に複数あるときは期限が一番早いもの）`
+      + `${data && when ? `・${_escapeHtml(when)} 時点` : ''}${!data && msg ? `・${msg}` : ''}・カードをクリックでメンバー別</span>`;
+  }
+  host.innerHTML = ISCT_CARDS.map(c => {
+    const n = data ? data.out[c.key].total.toLocaleString() : '—';
+    return `<button type="button" class="isls-card${_isctOpenKey === c.key && data ? ' isct-on' : ''}" onclick="toggleIsCallTaskPanel('${c.key}')" ${data ? '' : 'disabled'} title="クリックでメンバー別の数字">
+      <span class="isls-bar" style="background:${c.color}"></span><i class="ti ${_isctOpenKey === c.key && data ? 'ti-chevron-up' : 'ti-chevron-down'} isls-go"></i>
+      <span class="isls-h" style="color:${c.text}"><i class="ti ${c.icon}"></i>${c.label}</span>
+      <span class="isls-n">${n}<small>社</small></span>
+      <span class="isls-s">${subs[c.key]}</span></button>`;
+  }).join('');
+  _renderIsCallTaskPanel(data);
+}
+function toggleIsCallTaskPanel(key) {
+  _isctOpenKey = (_isctOpenKey === key) ? null : key;
+  renderIsCallTaskCards();
+}
+function _renderIsCallTaskPanel(data) {
+  const panel = document.getElementById('isCallTaskPanel');
+  if (!panel) return;
+  const c = ISCT_CARDS.find(x => x.key === _isctOpenKey);
+  if (!c || !data) { panel.innerHTML = ''; return; }
+  const b = data.out[c.key];
+  const rows = [...b.by.entries()].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0], 'ja'));
+  const max = rows.length ? rows[0][1] : 0;
+  const byLabel = c.key === 'none' ? '会社の担当者ごと' : 'タスクの担当者ごと';
+  panel.innerHTML = `<div class="isjb-grp"><div class="isjb-gh" style="border-left:4px solid ${c.color}">
+      <span style="color:${c.text}"><i class="ti ${c.icon}"></i> ${c.label}</span><span class="c">${b.total.toLocaleString()}社／${byLabel}・${rows.length}人</span>
+      <button type="button" class="isct-x" onclick="toggleIsCallTaskPanel('${c.key}')" title="閉じる"><i class="ti ti-x"></i></button></div>`
+    + (rows.length === 0 ? '<p class="text-xs text-slate-400 py-3 text-center">該当する会社がありません</p>'
+      : `<table class="isjb-t"><colgroup><col style="width:170px"><col style="width:84px"><col></colgroup><tbody>${rows.map(([n, v]) =>
+          `<tr><td style="font-weight:700" title="${_escapeHtml(n)}">${_escapeHtml(n)}</td><td class="isct-num">${v.toLocaleString()}<small>社</small></td><td><div class="isct-bar" style="width:${max ? Math.max(v / max * 100, 1.5) : 0}%;background:${c.color}"></div></td></tr>`).join('')}</tbody></table>`)
+    + '</div>';
+}
 
 // === モーダル ===
 let _isListLevel = 1;
