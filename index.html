@@ -2351,6 +2351,29 @@ const IS_TARGETS = {
 const IS_MEMBERS_FY2025 = ["駒田 智士", "吉住 碧斗", "田中 俊也", "大井 駿空", "福永 将也", "大山 耕太郎", "谷原 葵衣", "中村 雅", "宮原 亘輝", "テレアポ代行", "池田 美亜", "本島 翼", "西 倖平", "田代 大和", "深澤 陸", "長谷部 琴音", "宇野澤 彰子", "廣澤 未来", "大野 杏海", "柴原 かやね", "小島 萌"];
 const IS_MEMBERS_FY2026 = ["駒田 智士", "吉住 碧斗", "田中 俊也", "大井 駿空", "福永 将也", "大山 耕太郎", "谷原 葵衣", "中村 雅", "高橋 玲衣", "近藤 璃空", "宇佐美 朱莉", "開発 茉子", "前田 朱梨", "吉井 琉杏", "宮原 亘輝", "川上 陸斗", "久保 智花", "一色 柚穂", "若本 海人", "テレアポ代行", "池田 美亜", "本島 翼", "西 倖平", "田代 大和"];
 
+// ★ 2026-11-25 内定者インターン生の目標（出典：スプレッドシート「内定者/週報」の「内定者期間進捗確認シート」タブ・各人のアポイント数 月別目標）
+//   アポ取得＝シートの月別目標／アポ実施＝毎月1／ヨミ化＝毎月1（だいけんさん指定）
+//   平田 育人・小池 麦生はシートに無いため目標なし。合計行の目標（IS_TOTAL_TARGETS）には足さない
+(function addInternTargets() {
+  const months = ['2026/10','2026/11','2026/12','2027/01','2027/02','2027/03'];
+  const apoByMonth = {
+    '山崎 りん':   [1,1,1,2,1,1],
+    '田中 蒼馬':   [1,1,1,1,2,1],
+    '佐藤 斗':     [1,1,1,1,2,1],
+    '木塚 凜太朗': [3,4,2,2,2,2],
+    '平澤 友唯':   [1,1,1,1,2,1],
+    '松山 優希':   [1,1,1,1,1,1],
+    '渡邉 直洋':   [1,1,1,1,1,2],
+    '小川 悠希':   [1,1,1,1,1,1],
+    '三浦 武':     [1,1,1,1,1,2],
+    '西沢 和伽':   [1,1,1,1,1,2],
+  };
+  Object.entries(apoByMonth).forEach(([name, apos]) => {
+    IS_TARGETS[name] = IS_TARGETS[name] || {};
+    months.forEach((m, i) => { IS_TARGETS[name][m] = [apos[i], 1, 1]; });
+  });
+})();
+
 function getIsTargetFor(member, monthStr) {
   const t = (IS_TARGETS[member] || {})[monthStr];
   return t ? { apo: t[0], jisshi: t[1], yomi: t[2] } : { apo: 0, jisshi: 0, yomi: 0 };
@@ -3903,7 +3926,8 @@ function normalizeRow(row, hubspotId = null) {
     if (m) leadCreatedDate = new Date(parseInt(m[1]), parseInt(m[2])-1, m[3] ? parseInt(m[3]) : 1);
   }
   // レコード作成者・ヨミ/未ヨミ決着日・アポ作成日（IS KPI 用）
-  let recordCreator = String(find('レコード作成者','sakuseisyanigasi') || '').trim();
+  // ★ 2026-11-25 姓名の間の全角スペース・連続空白を半角1つにそろえる（例：「西沢　和伽」→「西沢 和伽」）
+  let recordCreator = String(find('レコード作成者','sakuseisyanigasi') || '').replace(/[　\s]+/g, ' ').trim();
   // ★ 旧名称「JobSpringAgent 事務局」を新名称「テレアポ代行」に統一
   if (recordCreator === 'JobSpringAgent 事務局') recordCreator = 'テレアポ代行';
   const yomiDecidedRaw = find('ヨミ/未ヨミ決着日','ヨミ決着日','yomikadate__c');
@@ -12336,14 +12360,38 @@ function _isTableJulOrLater(months) {
 function _isTableOctOnly(months) {
   return Array.isArray(months) && months.length > 0 && months.every(m => m >= '2026/10');
 }
+// ★ 2026-11-25 個人行だけ外す人（ユニット合計・合計行には影響させない＝ユニット名簿には残す）
+//   期間の月がすべて「外す月」以降のときだけ行を外す（それより前の月を含む期間は実績があるので表示）
+const IS_ROW_HIDE_FROM = {
+  '宮原 亘輝': '2026/10',   // 退職
+  '久保 智花': '2026/09',   // 異動
+  '田代 大和': '2026/10',   // 異動
+};
+// ★ 2026-11-25 内定者インターン生（Googleグループ ALL_IS より・だいけんさん指定）。2026/10 以降の月を含む期間で表示（目標は addInternTargets）
+const IS_INTERN_FROM = '2026/10';
+const IS_INTERNS = ['平田 育人','小池 麦生','渡邉 直洋','西沢 和伽','山崎 りん','木塚 凜太朗','田中 蒼馬','三浦 武','佐藤 斗','平澤 友唯','松山 優希','小川 悠希'];
+function _isInternPeriod(months) {
+  return Array.isArray(months) && months.some(m => m >= IS_INTERN_FROM);
+}
+function _isRowHidden(name, months) {
+  const from = IS_ROW_HIDE_FROM[name];
+  return !!from && Array.isArray(months) && months.length > 0 && months.every(m => m >= from);
+}
 function getIsTableRows(months) {
   if (currentFY !== 'FY2026') return IS_TABLE_ROWS_FY2025;
-  if (_isTableOctOnly(months)) return IS_TABLE_ROWS_FY2026_OCT;
-  return _isTableJulOrLater(months) ? IS_TABLE_ROWS_FY2026_JUL : IS_TABLE_ROWS_FY2026;
+  let base;
+  if (_isTableOctOnly(months)) base = IS_TABLE_ROWS_FY2026_OCT;
+  else base = _isTableJulOrLater(months) ? IS_TABLE_ROWS_FY2026_JUL : IS_TABLE_ROWS_FY2026;
+  let rows = base.filter(r => !_isRowHidden(r.name, months));
+  if (_isInternPeriod(months)) rows = rows.concat(IS_INTERNS.map(n => ({ name:n, color:'slate' })));
+  return rows;
 }
 function getIsUnits(months) {
-  if (_isTableOctOnly(months)) return IS_UNITS_FY2026_OCT;
-  return _isTableJulOrLater(months) ? IS_UNITS_FY2026_JUL : IS_UNITS_FY2026;
+  let units;
+  if (_isTableOctOnly(months)) units = IS_UNITS_FY2026_OCT;
+  else units = _isTableJulOrLater(months) ? IS_UNITS_FY2026_JUL : IS_UNITS_FY2026;
+  if (_isInternPeriod(months)) units = Object.assign({}, units, { '内定者インターン生': IS_INTERNS });
+  return units;
 }
 
 // 行カラー: 全て白背景（点線で区切り）
