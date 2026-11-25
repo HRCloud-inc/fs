@@ -6066,8 +6066,11 @@ function _renderIsListLevel2(kind) {
   const total = _dedupRows(rows).length;
   const accent = kind === 'yes' ? '#2575f0' : '#10b981';
 
-  const isMembers = getIsMembers();
-  const isMemberSet = new Set(isMembers);
+  // ★ 2026-11-25 内定者インターン生も ISメンバーとして扱う（上に並べる・「IS外」を付けない）。名前の空白の違いは無視
+  const _normNm = s => String(s || '').replace(/[　\s]+/g, ' ').trim();
+  const isMembers = getIsMembers().concat(currentFY === 'FY2026' && typeof IS_INTERNS !== 'undefined' ? IS_INTERNS : []);
+  const _isMemberNorm = new Set(isMembers.map(_normNm));
+  const isMemberSet = { has: (n) => _isMemberNorm.has(_normNm(n)) };
   const sortedOwners = Object.entries(ownerStats).sort((a, b) => {
     const aIs = isMemberSet.has(a[0]) ? 0 : 1;
     const bIs = isMemberSet.has(b[0]) ? 0 : 1;
